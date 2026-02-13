@@ -92,7 +92,7 @@ if __name__ == "__main__":
         
         try:
             pages = loader.load(str(pdf_file))
-            print(f"✅ Loaded {len(pages)} pages")
+            print(f" Loaded {len(pages)} pages")
             
             if pages:
                 print(f"\nPage 1 preview:")
@@ -101,4 +101,4 @@ if __name__ == "__main__":
                 print(f"  Size: {pages[0]['width']:.0f} x {pages[0]['height']:.0f}")
                 
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(f" Error: {e}")

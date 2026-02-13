@@ -27,10 +27,10 @@ def test_pdf_loader():
         try:
             pages = loader.load(str(pdf))
             assert len(pages) > 0
-            print(f"✅ {pdf.name}: {len(pages)} pages")
+            print(f" {pdf.name}: {len(pages)} pages")
             passed += 1
         except Exception as e:
-            print(f"❌ {pdf.name}: {e}")
+            print(f" {pdf.name}: {e}")
     
     return passed == len(pdf_files)
 
@@ -51,8 +51,8 @@ def test_chunker():
     pages = loader.load(str(pdf_files[0]))
     chunks = chunker.chunk_document(pages)
     
-    print(f"✅ Created {len(chunks)} chunks")
-    print(f"✅ Average size: {sum(c['metadata']['chunk_size'] for c in chunks) / len(chunks):.0f}")
+    print(f" Created {len(chunks)} chunks")
+    print(f" Average size: {sum(c['metadata']['chunk_size'] for c in chunks) / len(chunks):.0f}")
     
     return len(chunks) > 0
 
@@ -73,8 +73,8 @@ def test_pipeline():
     success = sum(1 for r in results if r['success'])
     total_chunks = sum(len(r['chunks']) for r in results if r['success'])
     
-    print(f"✅ Processed {success}/{len(results)} files")
-    print(f"✅ Total chunks: {total_chunks}")
+    print(f" Processed {success}/{len(results)} files")
+    print(f" Total chunks: {total_chunks}")
     
     return success == len(results)
 
@@ -103,10 +103,10 @@ def test_provenance():
     )
     
     if can_trace:
-        print(f"✅ Can trace to: {chunk['source']} page {chunk['page_number']}")
+        print(f" Can trace to: {chunk['source']} page {chunk['page_number']}")
         return True
     else:
-        print("❌ Cannot trace provenance")
+        print(" Cannot trace provenance")
         return False
 
 
@@ -136,7 +136,7 @@ def main():
     print("=" * 60)
     
     for name, passed in results:
-        status = "✅ PASS" if passed else "❌ FAIL"
+        status = " PASS" if passed else " FAIL"
         print(f"{status}: {name}")
     
     passed = sum(1 for _, p in results if p)

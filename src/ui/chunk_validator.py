@@ -42,7 +42,7 @@ def main():
             pages = loader.load(str(temp_path))
             chunks = chunker.chunk_document(pages)
             
-            st.success(f"✅ {len(pages)} pages → {len(chunks)} chunks")
+            st.success(f" {len(pages)} pages → {len(chunks)} chunks")
             
             # Stats
             col1, col2, col3 = st.columns(3)
