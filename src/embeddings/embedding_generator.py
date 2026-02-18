@@ -17,11 +17,15 @@ class EmbeddingGenerator:
         self,
         model_name: str = "all-MiniLM-L6-v2",
         cache_dir: str = "data/processed/embeddings_cache",
-        device: str = None
+        device: str = None,
+        use_cache: bool = True
     ):
         self.model_name = model_name
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.use_cache = use_cache
+        self.cache_dir = Path(cache_dir) if use_cache else None
+        
+        if self.use_cache:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         # Load model
         logger.info(f"Loading model: {model_name}")
@@ -55,6 +59,9 @@ class EmbeddingGenerator:
     
     def _load_from_cache(self, text: str) -> Union[np.ndarray, None]:
         """Load embedding from cache if exists"""
+        if not self.use_cache or self.cache_dir is None:
+            return None
+            
         key = self._get_cache_key(text)
         cache_path = self._get_cache_path(key)
         
@@ -67,6 +74,9 @@ class EmbeddingGenerator:
     
     def _save_to_cache(self, text: str, embedding: np.ndarray):
         """Save embedding to cache"""
+        if not self.use_cache or self.cache_dir is None:
+            return
+            
         key = self._get_cache_key(text)
         cache_path = self._get_cache_path(key)
         np.save(cache_path, embedding)
@@ -99,8 +109,10 @@ class EmbeddingGenerator:
         texts_to_encode = []
         indices_to_encode = []
         
-        # Check cache first
-        if use_cache:
+        # Check cache first (respect both instance and method parameter)
+        should_use_cache = self.use_cache and use_cache
+        
+        if should_use_cache:
             for idx, text in enumerate(texts):
                 cached = self._load_from_cache(text)
                 if cached is not None:
@@ -125,7 +137,7 @@ class EmbeddingGenerator:
             
             # Save to cache and store
             for idx, text, emb in zip(indices_to_encode, texts_to_encode, new_embeddings):
-                if use_cache:
+                if should_use_cache:
                     self._save_to_cache(text, emb)
                 embeddings.append((idx, emb))
         
@@ -160,9 +172,9 @@ class EmbeddingGenerator:
         is_correct = actual_dim == expected_dim
         
         if is_correct:
-            logger.info(f" Dimension check passed: {actual_dim}")
+            logger.info(f"✅ Dimension check passed: {actual_dim}")
         else:
-            logger.error(f" Dimension mismatch: expected {expected_dim}, got {actual_dim}")
+            logger.error(f"❌ Dimension mismatch: expected {expected_dim}, got {actual_dim}")
         
         return is_correct
     
@@ -232,5 +244,5 @@ if __name__ == "__main__":
         print()
     
     print("=" * 60)
-    print(" Day 8 complete!")
+    print("✅ Day 8 complete!")
     print("=" * 60)
