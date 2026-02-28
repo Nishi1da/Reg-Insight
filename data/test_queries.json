@@ -1,0 +1,23 @@
+[
+  {
+    "query": "financial reporting quarterly requirements",
+    "relevant_ids": [
+      "chunk_id_1",
+      "chunk_id_2"
+    ],
+    "description": "Find regulations about quarterly financial reporting",
+    "difficulty": "easy"
+  },
+  {
+    "query": "data breach notification timeline",
+    "relevant_ids": [],
+    "description": "How quickly must data breaches be reported",
+    "difficulty": "medium"
+  },
+  {
+    "query": "environmental impact assessment exemptions",
+    "relevant_ids": [],
+    "description": "Cases where EIA is not required",
+    "difficulty": "hard"
+  }
+]

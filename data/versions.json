@@ -1,0 +1,12 @@
+{
+  "versions": [
+    {
+      "id": "v_20260228_093724_a5fad6",
+      "name": "test_backup",
+      "created": "2026-02-28T09:37:24.178514",
+      "path": "data\\backups\\test_backup.zip",
+      "size_mb": 1.9324235916137695
+    }
+  ],
+  "current": "v_20260228_093724_a5fad6"
+}
