@@ -52,7 +52,7 @@ class CandidateGenerator:
         chroma_path: str = "data/processed/chroma_db",
         embedding_model: str = "all-MiniLM-L6-v2",
         reg_collection: str = "regulations",
-        policy_collection: str = "regulations"  # Same for now, can split later
+        policy_collection: str = "policies"
     ):
         self.chroma = ChromaManager(persist_directory=chroma_path)
         self.embedder = EmbeddingGenerator(model_name=embedding_model)

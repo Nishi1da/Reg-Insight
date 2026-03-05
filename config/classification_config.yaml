@@ -1,0 +1,41 @@
+# Gap Classification Configuration - Calibrated for Cross-Encoder
+# Week 4 - Day 24 (Updated based on Day 22 test results)
+
+thresholds:
+  aligned:
+    min_score: 0.15      # Lowered from 0.70 (scores observed: 0.005-0.204)
+    max_score: 1.00
+    description: "Policy adequately covers regulation requirement"
+    action: "No action needed"
+  
+  partial:
+    min_score: 0.05      # Lowered from 0.40
+    max_score: 0.149     # Just below aligned threshold
+    description: "Policy partially covers requirement, needs review"
+    action: "Manual review recommended"
+  
+  gap:
+    min_score: 0.00
+    max_score: 0.049     # Lowered from 0.39
+    description: "No adequate policy coverage found"
+    action: "Policy update required"
+
+confidence_weights:
+  cross_encoder: 0.50
+  bi_encoder: 0.25
+  candidate_rank: 0.15
+  score_variance: 0.10
+
+scoring:
+  bi_encoder_weight: 0.30
+  cross_encoder_weight: 0.70
+  
+  confidence_levels:
+    high: 0.80
+    medium: 0.60
+    low: 0.00
+
+visualization:
+  score_bins: 20
+  show_distribution: true
+  highlight_thresholds: true
