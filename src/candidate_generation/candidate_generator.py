@@ -70,8 +70,8 @@ class CandidateGenerator:
     def get_candidates(
         self,
         regulation_chunk: Dict,
-        top_k: int = 3,
-        min_score: float = 0.3
+        top_k: int = 5,
+        min_score: float = 0.15
     ) -> List[CandidatePair]:
         """
         Find top-k policy candidates for a regulation chunk
@@ -91,7 +91,8 @@ class CandidateGenerator:
         results = self.chroma.query(
             query_embeddings=[reg_embedding.tolist()],
             n_results=top_k * 2,  # Get more for filtering
-            collection_name=self.policy_collection
+            collection_name=self.policy_collection,
+            where={"doc_type": "policies"}
         )
         
         candidates = []
@@ -106,7 +107,7 @@ class CandidateGenerator:
                 results['metadatas'][0],
                 results.get('distances', [[]])[0])
         ):
-            # Skip if same as regulation (if collections overlap)
+            # Skip identical chunk
             if policy_id == regulation_chunk.get('chunk_id'):
                 continue
             
@@ -238,7 +239,7 @@ if __name__ == "__main__":
         
         print(f"   Regulation: {reg_chunk['content'][:80]}...")
         
-        candidates = gen.get_candidates(reg_chunk, top_k=3, min_score=0.3)
+        candidates = gen.get_candidates(reg_chunk, top_k=5, min_score=0.15)
         
         print(f"   Found {len(candidates)} candidates:")
         for c in candidates:
@@ -259,7 +260,7 @@ if __name__ == "__main__":
             'content': text,
             'metadata': metadata
         }
-        cands = gen.get_candidates(reg_chunk, top_k=2, min_score=0.3)
+        cands = gen.get_candidates(reg_chunk, top_k=5, min_score=0.15)
         test_candidates.extend(cands)
     
     print(f"   Generated {len(test_candidates)} total candidates")

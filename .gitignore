@@ -27,3 +27,10 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 outputs/
+config/groq_config.yaml
+data/llm_cache.db
+outputs/checkpoints/
+debug_collections.py
+quick_check.py
+test_candidates.py
+scripts/

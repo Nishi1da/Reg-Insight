@@ -204,7 +204,7 @@ class GapAnalyzer:
                 # Convert dict back to object for report
                 from scoring.unsupported_detector import UnsupportedRequirement
                 req = UnsupportedRequirement(
-                     regulation_chunk_id=unsupported['regulation_chunk_id'],
+                    regulation_chunk_id=unsupported['regulation_chunk_id'],
                     regulation_text=unsupported['regulation_text'],
                     regulation_source=unsupported['source'],
                     regulation_page=unsupported['page'],
@@ -216,7 +216,7 @@ class GapAnalyzer:
                     requirement_type=unsupported['requirement_type'],
                     recommended_priority=unsupported['recommended_priority'],
                     estimated_effort=unsupported['estimated_effort']
-                    )
+                )
                 unsupported_list.append(req)
         
         # Generate report
@@ -324,6 +324,77 @@ class GapAnalyzer:
             'unsupported_stats': self.unsupported_detector.get_stats()
         }
 
+    # ========== NEW METHOD ADDED HERE ==========
+    def export_validation_sample(self, output_path: str = "outputs/validation_sample.json"):
+        """Export 5 diverse cases for manual validation"""
+        logger.info("Generating validation sample...")
+        
+        # Get report
+        report = self.analyze_document(limit=20)
+        
+        # Pick diverse cases - one from each category
+        sample = []
+        
+        # 1. One unmatched case (if exists)
+        unmatched = [r for r in report['regulation_analysis'] if r['classification'] == 'unmatched']
+        if unmatched:
+            sample.append(unmatched[0])
+            logger.info(f"Added 1 unmatched case")
+        
+        # 2. One gap case (lowest score)
+        gaps = [r for r in report['regulation_analysis'] if r['classification'] == 'gap']
+        if gaps:
+            worst_gap = min(gaps, key=lambda x: x['final_score'])
+            sample.append(worst_gap)
+            logger.info(f"Added 1 gap case (score: {worst_gap['final_score']:.3f})")
+        
+        # 3. One partial case
+        partials = [r for r in report['regulation_analysis'] if r['classification'] == 'partial']
+        if partials:
+            sample.append(partials[0])
+            logger.info(f"Added 1 partial case")
+        
+        # 4. One high-confidence aligned
+        aligned_high = [r for r in report['regulation_analysis'] 
+                       if r['classification'] == 'aligned' and r['confidence'] > 0.8]
+        if aligned_high:
+            sample.append(aligned_high[0])
+            logger.info(f"Added 1 high-confidence aligned case")
+        
+        # 5. One lower-confidence aligned
+        aligned_low = [r for r in report['regulation_analysis'] 
+                      if r['classification'] == 'aligned' and r['confidence'] < 0.7]
+        if aligned_low:
+            sample.append(aligned_low[0])
+            logger.info(f"Added 1 lower-confidence aligned case")
+        
+        # Add manual review fields
+        for item in sample:
+            item['manual_review'] = {
+                'your_classification': '',      # aligned/partial/gap/unmatched
+                'confidence_in_your_judgment': '',  # high/medium/low
+                'system_was_wrong': False,    # True if you disagree
+                'why_wrong': '',              # explanation if wrong
+                'notes': ''                   # any other observations
+            }
+        
+        # Ensure directory exists
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save
+        with open(output_path, 'w') as f:
+            json.dump(sample, f, indent=2)
+        
+        logger.info(f"Exported {len(sample)} cases to {output_path}")
+        print(f"\n{'='*60}")
+        print("VALIDATION SAMPLE EXPORTED")
+        print(f"{'='*60}")
+        print(f"File: {output_path}")
+        print(f"Cases: {len(sample)}")
+        print(f"{'='*60}")
+        
+        return sample
+
 
 def main():
     """CLI entry point"""
@@ -362,6 +433,11 @@ def main():
         action='store_true',
         help='Print executive summary'
     )
+    parser.add_argument(
+        '--validate',
+        action='store_true',
+        help='Export validation sample for manual checking'
+    )
     
     args = parser.parse_args()
     
@@ -384,6 +460,10 @@ def main():
             print(f"\n Meets target: {results['avg_time_ms']}ms < 100ms")
         else:
             print(f"\n Below target: {results['avg_time_ms']}ms > 100ms")
+    
+    elif args.validate:
+        # Export validation sample
+        analyzer.export_validation_sample()
     
     elif args.analyze:
         # Full analysis

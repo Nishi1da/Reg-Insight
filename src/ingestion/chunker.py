@@ -5,15 +5,56 @@ from typing import List, Dict, Any
 import re
 import hashlib
 
+def is_valid_regulation_text(text: str) -> bool:
+    """
+    Filter non-regulatory content such as:
+    - Table of contents
+    - Acronyms
+    - Titles
+    - Page numbers
+    """
+
+    text_lower = text.lower().strip()
+
+    # Ignore very short chunks
+    if len(text) < 80:
+        return False
+
+    blocked_patterns = [
+        "table of contents",
+        "acronyms",
+        "glossary",
+        "definition",
+        "contents",
+        "acknowledgement",
+    ]
+
+    for pattern in blocked_patterns:
+        if pattern in text_lower:
+            return False
+
+    # Too many uppercase letters = probably title
+    uppercase_ratio = sum(1 for c in text if c.isupper()) / max(len(text), 1)
+    if uppercase_ratio > 0.4:
+        return False
+
+    # Page numbers
+    if re.match(r"^\d+\s*$", text_lower):
+        return False
+
+    return True
+
 
 class DocumentChunker:
     def __init__(
         self,
-        chunk_size: int = 512,
-        chunk_overlap: int = 50
+        chunk_size: int = 1024,
+        chunk_overlap: int = 200,
+        document_type: str = "unknown"
     ):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
+        self.document_type = document_type
         
         self.text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -50,6 +91,12 @@ class DocumentChunker:
         
         header = self.detect_section_header(text[:500])
         texts = self.text_splitter.split_text(text)
+        # Filter non-regulatory chunks
+        filtered_texts = []
+        for t in texts:
+            if is_valid_regulation_text(t):
+                filtered_texts.append(t)
+                texts = filtered_texts
         
         chunks = []
         for idx, chunk_text in enumerate(texts):
@@ -57,6 +104,7 @@ class DocumentChunker:
                 'chunk_id': self.create_chunk_id(source, page_number, idx),
                 'content': chunk_text,
                 'source': source,
+                'doc_type': self.document_type,
                 'page_number': page_number,
                 'chunk_index': idx,
                 'total_chunks_on_page': len(texts),

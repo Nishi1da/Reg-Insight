@@ -96,6 +96,7 @@ class BatchIngestionPipeline:
                         'section_header': section,
                         'word_count': nested.get('word_count', 0),
                         'chunk_size': nested.get('chunk_size', 0),
+                        'doc_type': collection_name,
                         'ingested_at': datetime.now().isoformat()
                     }
 
@@ -185,3 +186,42 @@ class BatchIngestionPipeline:
             stats['total_time'] = time.time() - stats['start_time']
             stats['chunks_per_second'] = stats['chunks_processed'] / stats['total_time']
         return stats
+    
+if __name__ == "__main__":
+
+    print("=" * 60)
+    print("DOCUMENT INGESTION PIPELINE")
+    print("=" * 60)
+
+    # Paths to your PDFs
+    regulations = [
+        "data/regulations/AML Regulation.pdf",
+        "data/regulations/Data Protection Regulation.pdf"
+    ]
+
+    policies = [
+        "data/policies/AML Policy.pdf",
+        "data/policies/Data Protection Policy.pdf"
+    ]
+
+    pipeline = BatchIngestionPipeline()
+
+    print("\nIndexing regulations...")
+    stats_reg = pipeline.ingest_from_pipeline(
+        regulations,
+        collection_name="regulations",
+        chunk_size=1024,
+        chunk_overlap=200
+    )
+
+    print("\nIndexing policies...")
+    stats_pol = pipeline.ingest_from_pipeline(
+        policies,
+        collection_name="policies",
+        chunk_size=1024,
+        chunk_overlap=200
+    )
+
+    print("\nIngestion finished")
+    print("Regulation stats:", stats_reg)
+    print("Policy stats:", stats_pol)

@@ -47,7 +47,7 @@ class CandidateGenerationPipeline:
         self.min_score = min_score
         
         # Initialize components
-        self.generator = CandidateGenerator(policy_collection=collection_name)
+        self.generator = CandidateGenerator(policy_collection="policies")
         self.optimizer = SimilarityOptimizer()
         self.ranker = CandidateRanker(similarity_weight, section_weight)
         self.edge_handler = EdgeCaseHandler(no_match_threshold=min_score)
