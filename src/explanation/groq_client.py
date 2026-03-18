@@ -285,7 +285,7 @@ class GroqLLMClient:
 # Test
 if __name__ == "__main__":
     print("=" * 60)
-    print("Day 30: Groq LLM Client Test")
+    print(" Groq LLM Client Test")
     print("=" * 60)
 
     print("\n1. Initializing Groq client...")
