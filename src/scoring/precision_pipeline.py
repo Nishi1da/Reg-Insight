@@ -116,7 +116,7 @@ class PrecisionScoringPipeline:
     
     def __init__(
         self,
-        cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        cross_encoder_model: str = "cross-encoder/nli-deberta-v3-small",
         bi_encoder_weight: float = 0.3,
         cross_encoder_weight: float = 0.7,
         use_cache: bool = True,

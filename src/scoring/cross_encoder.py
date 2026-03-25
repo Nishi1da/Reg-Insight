@@ -32,7 +32,7 @@ class CrossEncoderScore:
 class CrossEncoderScorer:
     def __init__(
         self,
-        model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        model_name: str = "cross-encoder/nli-deberta-v3-small",
         device: Optional[str] = None,
         max_length: int = 512,
         batch_size: int = 16
@@ -98,8 +98,13 @@ class CrossEncoderScorer:
             with torch.no_grad():
                 raw_score = self.model.predict([pair], show_progress_bar=False)[0]
             
-            # Convert to 0-1 range (ms-marco outputs raw logits)
-            score = float(torch.sigmoid(torch.tensor(raw_score)))
+            
+            raw = raw_score
+            if hasattr(raw, '__len__'):
+                probs = torch.softmax(torch.tensor(raw), dim=0)
+                score = float(probs[2])
+            else:
+                score = float(torch.sigmoid(torch.tensor(raw)))
             
             # Store in cache
             self._cache[cache_key] = score
@@ -165,7 +170,15 @@ class CrossEncoderScorer:
             batch_time = (time.time() - batch_start) * 1000
             
             for i, (reg_id, reg_text, pol_id, pol_text) in enumerate(batch):
-                score = float(torch.sigmoid(torch.tensor(raw_scores[i])))
+                raw = raw_scores[i]
+                if hasattr(raw, '__len__'):
+                    # NLI model: outputs [contradiction, neutral, entailment]
+                    #  the entailment score (index 2) as  match score
+                    probs = torch.softmax(torch.tensor(raw), dim=0)
+                    score = float(probs[2])
+                else:
+                    # Original ms-marco model: single score
+                    score = float(torch.sigmoid(torch.tensor(raw)))
                 
                 results.append(CrossEncoderScore(
                     regulation_chunk_id=reg_id,

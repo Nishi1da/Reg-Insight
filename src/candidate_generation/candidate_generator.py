@@ -71,7 +71,7 @@ class CandidateGenerator:
         self,
         regulation_chunk: Dict,
         top_k: int = 5,
-        min_score: float = 0.15
+        min_score: float = 0.05
     ) -> List[CandidatePair]:
         """
         Find top-k policy candidates for a regulation chunk
@@ -86,14 +86,22 @@ class CandidateGenerator:
         """
         # Embed regulation chunk
         reg_embedding = self.embedder.encode(regulation_chunk['content'])
+
+         # ← ADD: Debug logging
+        print(f"\n[DEBUG] Querying for regulation: {regulation_chunk['chunk_id'][:30]}...")
+        print(f"[DEBUG] Embedding dim: {len(reg_embedding)}")
+        print(f"[DEBUG] Searching collection: '{self.policy_collection}'")
         
         # Search in policy collection
         results = self.chroma.query(
             query_embeddings=[reg_embedding.tolist()],
             n_results=top_k * 2,  # Get more for filtering
-            collection_name=self.policy_collection,
-            where={"doc_type": "policies"}
+            collection_name=self.policy_collection
         )
+         #  Debug results
+        print(f"[DEBUG] Raw results: {len(results['ids'][0]) if results['ids'] else 0} candidates")
+        if results['ids'][0]:
+            print(f"[DEBUG] Top distance: {results['distances'][0][0]:.4f}")
         
         candidates = []
         
@@ -111,12 +119,14 @@ class CandidateGenerator:
             if policy_id == regulation_chunk.get('chunk_id'):
                 continue
             
-            # Calculate similarity (convert distance to similarity)
-            similarity = 1.0 - (distance if distance else 0)
-            
-            # Filter by minimum score
-            if similarity < min_score:
-                continue
+            # Safe similarity conversion
+            if distance is None:
+                similarity = 0
+            else:
+                similarity = 1 / (1 + distance)
+                # Relax threshold
+                if similarity < min_score:
+                    continue
             
             candidate = CandidatePair(
                 regulation_chunk_id=regulation_chunk['chunk_id'],

@@ -384,6 +384,7 @@ class IntelligentRetryManager:
         prompt_version: str,
         llm_client,
         parser,
+        system_prompt: Optional[str] = None,
         temperature: float = 0.1
     ) -> Dict:
         """
@@ -419,6 +420,7 @@ class IntelligentRetryManager:
             try:
                 response = llm_client.generate(
                     prompt=prompt,
+                    system_prompt=system_prompt,
                     temperature=temperature + (attempt * 0.05),
                     max_tokens=500
                 )

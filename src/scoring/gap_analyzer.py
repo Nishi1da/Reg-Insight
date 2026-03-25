@@ -41,7 +41,7 @@ class GapAnalyzer:
     def __init__(
         self,
         collection_name: str = "regulations",
-        cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        cross_encoder_model: str = "cross-encoder/nli-deberta-v3-small",
         enable_calibration: bool = False,
         calibration_data_path: Optional[str] = None
     ):
@@ -51,7 +51,7 @@ class GapAnalyzer:
         self.candidate_pipeline = CandidateGenerationPipeline(
             collection_name=collection_name,
             top_k=5,
-            min_score=0.2
+            min_score=0.05
         )
         
         self.precision_pipeline = PrecisionScoringPipeline(

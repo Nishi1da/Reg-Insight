@@ -80,7 +80,7 @@ class ExplanationPipeline:
         self.prompt_manager = PromptTemplateManager()
         self.llm_client = GroqLLMClient(
             api_key=api_key,
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
             max_retries=self.config.max_retries
@@ -177,7 +177,7 @@ class ExplanationPipeline:
 
         result = self.retry_manager.execute(
             prompt=prompt,
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             prompt_version=f"gap_analysis@{prompt_version}",
             llm_client=self.llm_client,
             parser=self.parser,
@@ -212,7 +212,7 @@ class ExplanationPipeline:
                 regulation_chunk_id=gap.regulation_chunk_id,
                 policy_chunk_id=best_match.get('policy_chunk_id'),
                 explanation=explanation,
-                llm_model="llama3-8b-8192",
+                llm_model="llama-3.1-8b-instant",
                 prompt_version=f"gap_analysis@{prompt_version}",
                 generation_time_ms=elapsed,
                 parsing_success=True
@@ -229,7 +229,7 @@ class ExplanationPipeline:
                     key_differences=[f"Error: {result['error']}"],
                     confidence="low"
                 ),
-                llm_model="llama3-8b-8192",
+                llm_model="llama-3.1-8b-instant",
                 prompt_version=f"gap_analysis@{prompt_version}",
                 generation_time_ms=elapsed,
                 parsing_success=False
@@ -258,7 +258,7 @@ class ExplanationPipeline:
 
         result = self.retry_manager.execute(
             prompt=prompt,
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             prompt_version="unsupported_analysis@1.0.0",
             llm_client=self.llm_client,
             parser=self.parser,
@@ -285,7 +285,7 @@ class ExplanationPipeline:
             regulation_chunk_id=unsupported.regulation_chunk_id,
             policy_chunk_id=None,
             explanation=explanation,
-            llm_model="llama3-8b-8192",
+            llm_model="llama-3.1-8b-instant",
             prompt_version="unsupported_analysis@1.0.0",
             generation_time_ms=elapsed,
             parsing_success=result['success']
@@ -316,7 +316,7 @@ class ExplanationPipeline:
         usage = self.llm_client.check_daily_usage()
         if usage['status'] == 'critical':
             logger.warning(
-                f"⚠️  Near daily limit: {usage['used_today']}"
+                f"  Near daily limit: {usage['used_today']}"
                 f"/{usage['daily_limit']}"
             )
 
@@ -405,7 +405,7 @@ class ExplanationPipeline:
 
         gap_report['regulation_analysis'] = enriched
         gap_report['explanation_metadata'] = {
-            'model': 'llama3-8b-8192',
+            'model': 'llama-3.1-8b-instant',
             'provider': 'groq',
             'generated_at': datetime.now().isoformat(),
             'total_explanations': len(explanations),
