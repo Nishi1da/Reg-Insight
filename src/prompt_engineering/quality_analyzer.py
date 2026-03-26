@@ -190,7 +190,7 @@ class PromptQualityAnalyzer:
             structure_score=structure,
             risk_consistency_score=risk_consistency,
             overall_score=round(overall, 3),
-            issues=issues,
+            issues=list(set(issues)),
             passed=passed
         )
 
