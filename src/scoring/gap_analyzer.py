@@ -1,4 +1,4 @@
-"""Gap Analyzer - Main integration module for Week 4"""
+"""Gap Analyzer - Main integration module"""
 
 import sys
 from pathlib import Path
@@ -23,185 +23,310 @@ from scoring.confidence_calibrator import ConfidenceCalibrator
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Minimum bi-encoder score to proceed to cross-encoder
+COSINE_GATE = 0.25
+
 
 class GapAnalyzer:
     """
-    End-to-end Gap Analysis System
-    
-    Complete pipeline:
-    1. Candidate Generation (Week 3)
-    2. Cross-Encoder Scoring (Day 22)
-    3. Precision Scoring (Day 23)
-    4. Gap Classification (Day 24)
-    5. Unsupported Detection (Day 25)
-    6. Report Generation (Day 26)
-    7. Confidence Calibration (Day 27)
+    End-to-end Gap Analysis System.
+
+    Only analyzes chunks from the regulations collection (doc_type="regulation").
+    Matches each regulation chunk against the policies collection using
+    domain-filtered retrieval — same-domain policy chunks are searched first,
+    falling back to all policies if too few domain matches exist.
     """
-    
+
     def __init__(
         self,
         collection_name: str = "regulations",
-        cross_encoder_model: str = "cross-encoder/nli-deberta-v3-small",
+        cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
         enable_calibration: bool = False,
         calibration_data_path: Optional[str] = None
     ):
         logger.info("Initializing Gap Analyzer...")
-        
-        # Initialize components
+
         self.candidate_pipeline = CandidateGenerationPipeline(
             collection_name=collection_name,
             top_k=5,
-            min_score=0.05
+            min_score=0.25
         )
-        
+
         self.precision_pipeline = PrecisionScoringPipeline(
             cross_encoder_model=cross_encoder_model,
             bi_encoder_weight=0.3,
             cross_encoder_weight=0.7,
             use_cache=True
         )
-        
-        self.classifier = GapClassifier()
+
+        self.classifier           = GapClassifier()
         self.unsupported_detector = UnsupportedRequirementsDetector()
-        self.report_generator = GapReportGenerator(version="1.0.0")
-        
-        # Optional calibration
+        self.report_generator     = GapReportGenerator(version="1.0.0")
+
         self.calibrator = None
         if enable_calibration and calibration_data_path:
             self.calibrator = ConfidenceCalibrator(method="isotonic")
             self._load_calibration(calibration_data_path)
-        
+
         self.stats = {
             'regulations_processed': 0,
             'total_processing_time_ms': 0,
-            'avg_time_per_regulation_ms': 0
+            'avg_time_per_regulation_ms': 0,
+            'domain_filter_hits': 0,       # how many used domain-filtered retrieval
+            'domain_filter_fallbacks': 0,  # how many fell back to unfiltered
+            'cosine_gate_rejections': 0,   # how many blocked by cosine gate
         }
-        
+
         logger.info("Gap Analyzer initialized successfully")
-    
+
+    # ------------------------------------------------------------------ #
+    #  CALIBRATION                                                         #
+    # ------------------------------------------------------------------ #
+
     def _load_calibration(self, path: str):
-        """Load calibration data"""
         try:
-            with open(path, 'r') as f:
+            with open(path) as f:
                 data = json.load(f)
             self.calibrator.fit(data['confidences'], data['accuracies'])
             logger.info("Calibration loaded successfully")
         except Exception as e:
             logger.warning(f"Could not load calibration: {e}")
-    
+
+    # ------------------------------------------------------------------ #
+    #  DOMAIN-FILTERED RETRIEVAL  (Fix 5)                                 #
+    # ------------------------------------------------------------------ #
+
+    def _get_candidates_with_domain_filter(
+        self,
+        regulation_chunk: Dict,
+        reg_domain: str
+    ) -> list:
+        """
+        Retrieve policy candidates filtered by regulatory domain.
+
+        Strategy:
+          1. Query policy collection filtered to same domain.
+          2. If fewer than 2 results, fall back to unfiltered policy query.
+          3. Apply cosine gate — drop candidates with bi-encoder score < COSINE_GATE.
+
+        This ensures regulation chunks only match semantically related policy
+        chunks, preventing cross-domain false matches.
+        """
+        generator = self.candidate_pipeline.generator
+
+        # ── Step 1: try domain-filtered query ────────────────────────────
+        raw_candidates = []
+
+        if reg_domain and reg_domain != "general":
+            try:
+                raw_candidates = generator.get_candidates(
+                    regulation_chunk,
+                    top_k=5,
+                    min_score=0.2,
+                    where_filter={
+                        "$and": [
+                            {"doc_type": {"$eq": "policy"}},
+                            {"domain":   {"$eq": reg_domain}}
+                        ]
+                    }
+                )
+
+                if len(raw_candidates) >= 2:
+                    self.stats['domain_filter_hits'] += 1
+                    logger.debug(
+                        f"Domain filter '{reg_domain}': {len(raw_candidates)} candidates"
+                    )
+                else:
+                    # Too few — fall through to unfiltered
+                    raw_candidates = []
+
+            except Exception as e:
+                logger.debug(f"Domain filter query failed ({e}), falling back")
+                raw_candidates = []
+
+        # ── Step 2: fallback — any policy chunk ───────────────────────────
+        if not raw_candidates:
+            self.stats['domain_filter_fallbacks'] += 1
+            try:
+                raw_candidates = generator.get_candidates(
+                    regulation_chunk,
+                    top_k=5,
+                    min_score=0.2,
+                    where_filter={"doc_type": {"$eq": "policy"}}
+                )
+            except Exception:
+                # Last resort — no filter at all
+                raw_candidates = generator.get_candidates(
+                    regulation_chunk,
+                    top_k=5,
+                    min_score=0.2
+                )
+
+        # ── Step 3: cosine gate — remove weak semantic matches ────────────
+        before_gate = len(raw_candidates)
+        raw_candidates = self._apply_cosine_gate(raw_candidates)
+        rejected = before_gate - len(raw_candidates)
+
+        if rejected > 0:
+            self.stats['cosine_gate_rejections'] += rejected
+            logger.debug(f"Cosine gate rejected {rejected}/{before_gate} candidates")
+
+        return raw_candidates
+
+    def _apply_cosine_gate(self, candidates: list) -> list:
+        """
+        Drop candidates whose bi-encoder similarity is below COSINE_GATE.
+        These are semantically unrelated — cross-encoder scoring is wasted on them.
+        """
+        filtered = []
+        for c in candidates:
+            # Support both object attributes and dict keys
+            if hasattr(c, 'bi_encoder_score'):
+                score = c.bi_encoder_score
+            elif hasattr(c, 'similarity_score'):
+                score = c.similarity_score
+            elif hasattr(c, 'score'):
+                score = c.score
+            elif isinstance(c, dict):
+                score = c.get('bi_encoder_score',
+                              c.get('similarity_score',
+                              c.get('score', 0.0)))
+            else:
+                score = 0.0
+
+            if score >= COSINE_GATE:
+                filtered.append(c)
+
+        return filtered
+
+    # ------------------------------------------------------------------ #
+    #  SINGLE CHUNK ANALYSIS                                               #
+    # ------------------------------------------------------------------ #
+
     def analyze_regulation_chunk(
         self,
         regulation_chunk: Dict
     ) -> Tuple[GapClassification, Optional[Dict]]:
         """
-        Analyze single regulation chunk
-        
-        Args:
-            regulation_chunk: Dict with chunk_id, content, metadata
-        
-        Returns:
-            (GapClassification, unsupported_info)
+        Analyze a single regulation chunk against all policy chunks.
+
+        Pipeline:
+          1. Domain-filtered candidate retrieval
+          2. Rank + deduplicate
+          3. Cross-encoder precision scoring
+          4. Gap classification
+          5. (Optional) confidence calibration
+          6. Unsupported requirement detection
         """
         start_time = time.time()
-        
-        # Step 1: Generate candidates
-        raw_candidates = self.candidate_pipeline.generator.get_candidates(
-            regulation_chunk,
-            top_k=5,
-            min_score=0.2
+
+        reg_domain = regulation_chunk.get('metadata', {}).get('domain', 'general')
+
+        # ── Step 1: retrieve candidates (domain-filtered + cosine gate) ───
+        raw_candidates = self._get_candidates_with_domain_filter(
+            regulation_chunk, reg_domain
         )
-        
-        # Step 2: Rank candidates (from Week 3)
+
+        # ── Step 2: rank + deduplicate ────────────────────────────────────
         ranked = self.candidate_pipeline.ranker.rank_candidates(raw_candidates)
         unique = self.candidate_pipeline.ranker.deduplicate_candidates(ranked)
-        
-        # Step 3: Precision scoring with cross-encoder
+
+        # ── Step 3: cross-encoder scoring ─────────────────────────────────
         if unique:
             scored = self.precision_pipeline.score_candidates(unique[:3])
         else:
             scored = []
-        
-        # Step 4: Gap classification
+
+        # ── Step 4: classify (empty list → UNMATCHED in classifier) ───────
         classification = self.classifier.classify(
             regulation_chunk['chunk_id'],
             regulation_chunk['content'],
             regulation_chunk.get('metadata', {}),
             scored
         )
-        
-        # Step 5: Calibrate confidence if enabled
+
+        # ── Step 5: optional calibration ──────────────────────────────────
         if self.calibrator:
             calibration = self.calibrator.calibrate(classification.confidence)
-            # Update classification with calibrated confidence
             classification.confidence = calibration.calibrated_confidence
-        
-        # Step 6: Detect unsupported
+
+        # ── Step 6: unsupported detection ─────────────────────────────────
         unsupported = self.unsupported_detector.detect_unsupported(
             regulation_chunk,
             scored,
             classification.classification
         )
-        
+
         elapsed = (time.time() - start_time) * 1000
-        
-        # Update stats
         self.stats['regulations_processed'] += 1
         self.stats['total_processing_time_ms'] += elapsed
         self.stats['avg_time_per_regulation_ms'] = (
             self.stats['total_processing_time_ms'] / self.stats['regulations_processed']
         )
-        
+
         return classification, unsupported.to_dict() if unsupported else None
-    
+
+    # ------------------------------------------------------------------ #
+    #  FULL DOCUMENT ANALYSIS                                              #
+    # ------------------------------------------------------------------ #
+
     def analyze_document(
         self,
         limit: Optional[int] = None,
         progress_callback=None
     ) -> Dict:
         """
-        Analyze full document (all regulation chunks)
-        
-        Args:
-            limit: Optional limit for testing
-            progress_callback: Optional callback function(progress_pct)
-        
-        Returns:
-            Complete gap report
+        Analyze all regulation chunks from ChromaDB.
+
+        CRITICAL: filters collection to doc_type="regulation" only so policy
+        chunks are never analyzed as if they were regulations.
         """
         logger.info(f"Starting document analysis (limit={limit})...")
         start_time = time.time()
-        
-        # Get all regulation chunks
+
         collection = self.candidate_pipeline.generator.chroma.get_collection(
             self.candidate_pipeline.collection_name
         )
-        all_data = collection.get(limit=limit)
-        
+
+        # ── Fetch regulation chunks only ──────────────────────────────────
+        try:
+            all_data = collection.get(
+                limit=limit,
+                where={"doc_type": "regulation"}
+            )
+            logger.info("Filtered to doc_type='regulation' chunks only")
+        except Exception:
+            logger.warning(
+                "doc_type filter failed — fetching all chunks (re-ingest recommended)"
+            )
+            all_data = collection.get(limit=limit)
+
         total = len(all_data['ids'])
         logger.info(f"Found {total} regulation chunks to analyze")
-        
-        classifications = []
+
+        classifications  = []
         unsupported_list = []
-        
+
         for i, (chunk_id, text, metadata) in enumerate(zip(
-            all_data['ids'], all_data['documents'], all_data['metadatas']
+            all_data['ids'],
+            all_data['documents'],
+            all_data['metadatas']
         )):
             if i % 10 == 0:
                 logger.info(f"  Progress: {i}/{total} ({i/total*100:.1f}%)")
                 if progress_callback:
                     progress_callback(i / total * 100)
-            
+
             reg_chunk = {
                 'chunk_id': chunk_id,
-                'content': text,
-                'metadata': metadata
+                'content':  text,
+                'metadata': metadata or {}
             }
-            
+
             classification, unsupported = self.analyze_regulation_chunk(reg_chunk)
             classifications.append(classification)
-            
+
             if unsupported:
-                # Convert dict back to object for report
                 from scoring.unsupported_detector import UnsupportedRequirement
                 req = UnsupportedRequirement(
                     regulation_chunk_id=unsupported['regulation_chunk_id'],
@@ -218,8 +343,7 @@ class GapAnalyzer:
                     estimated_effort=unsupported['estimated_effort']
                 )
                 unsupported_list.append(req)
-        
-        # Generate report
+
         report = self.report_generator.create_batch_report(
             classifications=classifications,
             unsupported=unsupported_list,
@@ -229,261 +353,172 @@ class GapAnalyzer:
                 'model': self.precision_pipeline.cross_encoder.model_name
             }
         )
-        
+
+        # Log domain filter effectiveness
+        logger.info(
+            f"Domain filter stats — hits: {self.stats['domain_filter_hits']}, "
+            f"fallbacks: {self.stats['domain_filter_fallbacks']}, "
+            f"cosine rejections: {self.stats['cosine_gate_rejections']}"
+        )
         logger.info(f"Analysis complete: {total} chunks in {time.time()-start_time:.1f}s")
-        
         return report
-    
+
+    # ------------------------------------------------------------------ #
+    #  SINGLE TEXT ANALYSIS                                                #
+    # ------------------------------------------------------------------ #
+
     def analyze_single(
         self,
         regulation_text: str,
         regulation_id: str = "manual_input"
     ) -> Dict:
-        """
-        Analyze single regulation text (for CLI/testing)
-        
-        Args:
-            regulation_text: Regulation requirement text
-            regulation_id: ID for tracking
-        
-        Returns:
-            Analysis result dict
-        """
+        """Analyze a single regulation text string."""
         reg_chunk = {
             'chunk_id': regulation_id,
-            'content': regulation_text,
-            'metadata': {'source': 'manual', 'input_time': datetime.now().isoformat()}
+            'content':  regulation_text,
+            'metadata': {
+                'source':     'manual',
+                'doc_type':   'regulation',
+                'domain':     'general',
+                'input_time': datetime.now().isoformat()
+            }
         }
-        
         classification, unsupported = self.analyze_regulation_chunk(reg_chunk)
-        
         return {
-            'classification': classification.to_dict(),
-            'is_unsupported': unsupported is not None,
-            'unsupported_details': unsupported if unsupported else None,
-            'processing_stats': {
+            'classification':      classification.to_dict(),
+            'is_unsupported':      unsupported is not None,
+            'unsupported_details': unsupported,
+            'processing_stats':    {
                 'avg_time_ms': self.stats['avg_time_per_regulation_ms']
             }
         }
-    
+
+    # ------------------------------------------------------------------ #
+    #  BENCHMARK                                                           #
+    # ------------------------------------------------------------------ #
+
     def benchmark(self, n_chunks: int = 100) -> Dict:
-        """
-        Performance benchmark
-        
-        Args:
-            n_chunks: Number of chunks to process
-        
-        Returns:
-            Benchmark results
-        """
-        logger.info(f"Running benchmark with {n_chunks} chunks...")
-        
         collection = self.candidate_pipeline.generator.chroma.get_collection(
             self.candidate_pipeline.collection_name
         )
-        sample = collection.get(limit=n_chunks)
-        
+        try:
+            sample = collection.get(
+                limit=n_chunks,
+                where={"doc_type": "regulation"}
+            )
+        except Exception:
+            sample = collection.get(limit=n_chunks)
+
         times = []
-        
         for chunk_id, text, metadata in zip(
             sample['ids'], sample['documents'], sample['metadatas']
         ):
             start = time.time()
-            
             reg_chunk = {
                 'chunk_id': chunk_id,
-                'content': text,
-                'metadata': metadata
+                'content':  text,
+                'metadata': metadata or {}
             }
-            
             self.analyze_regulation_chunk(reg_chunk)
             times.append((time.time() - start) * 1000)
-        
-        avg_time = sum(times) / len(times)
-        max_time = max(times)
-        min_time = min(times)
-        
-        # Target: < 100ms per regulation (Week 3 requirement)
-        meets_target = avg_time < 100
-        
+
+        avg_time = sum(times) / len(times) if times else 0
         return {
-            'chunks_processed': len(times),
-            'avg_time_ms': round(avg_time, 2),
-            'max_time_ms': round(max_time, 2),
-            'min_time_ms': round(min_time, 2),
-            'target_ms': 100,
-            'meets_target': meets_target,
+            'chunks_processed':      len(times),
+            'avg_time_ms':           round(avg_time, 2),
+            'max_time_ms':           round(max(times), 2) if times else 0,
+            'min_time_ms':           round(min(times), 2) if times else 0,
+            'target_ms':             100,
+            'meets_target':          avg_time < 100,
             'throughput_per_second': round(1000 / avg_time, 2) if avg_time > 0 else 0
         }
-    
+
+    # ------------------------------------------------------------------ #
+    #  STATS + VALIDATION                                                  #
+    # ------------------------------------------------------------------ #
+
     def get_stats(self) -> Dict:
-        """Get analyzer statistics"""
         return {
             **self.stats,
-            'classifier_stats': self.classifier.get_stats(),
+            'classifier_stats':  self.classifier.get_stats(),
             'unsupported_stats': self.unsupported_detector.get_stats()
         }
 
-    # ========== NEW METHOD ADDED HERE ==========
-    def export_validation_sample(self, output_path: str = "outputs/validation_sample.json"):
-        """Export 5 diverse cases for manual validation"""
-        logger.info("Generating validation sample...")
-        
-        # Get report
-        report = self.analyze_document(limit=20)
-        
-        # Pick diverse cases - one from each category
-        sample = []
-        
-        # 1. One unmatched case (if exists)
-        unmatched = [r for r in report['regulation_analysis'] if r['classification'] == 'unmatched']
-        if unmatched:
-            sample.append(unmatched[0])
-            logger.info(f"Added 1 unmatched case")
-        
-        # 2. One gap case (lowest score)
-        gaps = [r for r in report['regulation_analysis'] if r['classification'] == 'gap']
-        if gaps:
-            worst_gap = min(gaps, key=lambda x: x['final_score'])
-            sample.append(worst_gap)
-            logger.info(f"Added 1 gap case (score: {worst_gap['final_score']:.3f})")
-        
-        # 3. One partial case
-        partials = [r for r in report['regulation_analysis'] if r['classification'] == 'partial']
-        if partials:
-            sample.append(partials[0])
-            logger.info(f"Added 1 partial case")
-        
-        # 4. One high-confidence aligned
-        aligned_high = [r for r in report['regulation_analysis'] 
-                       if r['classification'] == 'aligned' and r['confidence'] > 0.8]
-        if aligned_high:
-            sample.append(aligned_high[0])
-            logger.info(f"Added 1 high-confidence aligned case")
-        
-        # 5. One lower-confidence aligned
-        aligned_low = [r for r in report['regulation_analysis'] 
-                      if r['classification'] == 'aligned' and r['confidence'] < 0.7]
-        if aligned_low:
-            sample.append(aligned_low[0])
-            logger.info(f"Added 1 lower-confidence aligned case")
-        
-        # Add manual review fields
+    def export_validation_sample(
+        self,
+        output_path: str = "outputs/validation_sample.json"
+    ):
+        report   = self.analyze_document(limit=20)
+        sample   = []
+        analysis = report.get('regulation_analysis', [])
+
+        for cls_label in ['unmatched', 'gap', 'partial', 'aligned']:
+            matches = [r for r in analysis if r['classification'] == cls_label]
+            if matches:
+                sample.append(matches[0])
+            if len(sample) >= 5:
+                break
+
         for item in sample:
             item['manual_review'] = {
-                'your_classification': '',      # aligned/partial/gap/unmatched
-                'confidence_in_your_judgment': '',  # high/medium/low
-                'system_was_wrong': False,    # True if you disagree
-                'why_wrong': '',              # explanation if wrong
-                'notes': ''                   # any other observations
+                'your_classification':         '',
+                'confidence_in_your_judgment': '',
+                'system_was_wrong':            False,
+                'why_wrong':                   '',
+                'notes':                       ''
             }
-        
-        # Ensure directory exists
+
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save
         with open(output_path, 'w') as f:
             json.dump(sample, f, indent=2)
-        
-        logger.info(f"Exported {len(sample)} cases to {output_path}")
-        print(f"\n{'='*60}")
-        print("VALIDATION SAMPLE EXPORTED")
-        print(f"{'='*60}")
-        print(f"File: {output_path}")
-        print(f"Cases: {len(sample)}")
-        print(f"{'='*60}")
-        
+
+        logger.info(f"Exported {len(sample)} validation cases to {output_path}")
         return sample
 
 
+# ---------------------------------------------------------------------- #
+#  CLI                                                                     #
+# ---------------------------------------------------------------------- #
+
 def main():
-    """CLI entry point"""
-    parser = argparse.ArgumentParser(
-        description='Regulatory Gap Analyzer - Week 4'
-    )
-    parser.add_argument(
-        '--analyze', '-a',
-        action='store_true',
-        help='Run full document analysis'
-    )
-    parser.add_argument(
-        '--text', '-t',
-        type=str,
-        help='Analyze single regulation text'
-    )
-    parser.add_argument(
-        '--limit', '-l',
-        type=int,
-        default=None,
-        help='Limit number of chunks (for testing)'
-    )
-    parser.add_argument(
-        '--benchmark', '-b',
-        action='store_true',
-        help='Run performance benchmark'
-    )
-    parser.add_argument(
-        '--output', '-o',
-        type=str,
-        default='outputs/gap_analysis_report.json',
-        help='Output path for report'
-    )
-    parser.add_argument(
-        '--summary', '-s',
-        action='store_true',
-        help='Print executive summary'
-    )
-    parser.add_argument(
-        '--validate',
-        action='store_true',
-        help='Export validation sample for manual checking'
-    )
-    
+    parser = argparse.ArgumentParser(description='Regulatory Gap Analyzer')
+    parser.add_argument('--analyze',   '-a', action='store_true', help='Run full analysis')
+    parser.add_argument('--text',      '-t', type=str,            help='Analyze single text')
+    parser.add_argument('--limit',     '-l', type=int,            help='Limit chunks (testing)')
+    parser.add_argument('--benchmark', '-b', action='store_true', help='Performance benchmark')
+    parser.add_argument('--output',    '-o', type=str,
+                        default='outputs/gap_analysis_report.json')
+    parser.add_argument('--summary',   '-s', action='store_true', help='Print summary')
+    parser.add_argument('--validate',        action='store_true', help='Export validation sample')
     args = parser.parse_args()
-    
-    # Initialize analyzer
+
     analyzer = GapAnalyzer()
-    
+
     if args.text:
-        # Single text analysis
-        print(f"Analyzing: {args.text[:80]}...")
         result = analyzer.analyze_single(args.text)
         print(json.dumps(result, indent=2))
-    
+
     elif args.benchmark:
-        # Benchmark
-        print("Running performance benchmark...")
         results = analyzer.benchmark(n_chunks=100)
         print(json.dumps(results, indent=2))
-        
-        if results['meets_target']:
-            print(f"\n Meets target: {results['avg_time_ms']}ms < 100ms")
-        else:
-            print(f"\n Below target: {results['avg_time_ms']}ms > 100ms")
-    
+
     elif args.validate:
-        # Export validation sample
         analyzer.export_validation_sample()
-    
+
     elif args.analyze:
-        # Full analysis
         print("Running full document analysis...")
-        report = analyzer.analyze_document(limit=args.limit)
-        
-        # Export
+        report  = analyzer.analyze_document(limit=args.limit)
         success = analyzer.report_generator.export_report(report, args.output)
         if success:
-            print(f"\n Report saved: {args.output}")
-            
+            print(f"\nReport saved: {args.output}")
             if args.summary:
                 print(analyzer.report_generator.generate_executive_summary(report))
         else:
-            print("\n Failed to export report")
-    
+            print("\nFailed to export report")
+
     else:
         parser.print_help()
 
 
-# Test
 if __name__ == "__main__":
     main()

@@ -20,6 +20,32 @@ from candidate_generation.validator import CandidateValidator
 _module_logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+COSINE_GATE = 0.25
+
+def _apply_cosine_gate(candidates):
+    filtered = []
+
+    for c in candidates:
+        # Try multiple possible attributes
+        score = None
+
+        if hasattr(c, 'bi_encoder_score'):
+            score = c.bi_encoder_score
+        elif hasattr(c, 'similarity_score'):
+            score = c.similarity_score
+        elif hasattr(c, 'score'):
+            score = c.score
+        elif hasattr(c, 'distance'):
+            # convert distance → similarity
+            score = 1 / (1 + c.distance)
+
+        if score is None:
+            continue
+
+        if score >= COSINE_GATE:
+            filtered.append(c)
+
+    return filtered
 
 class CandidateGenerationPipeline:
     """
@@ -84,6 +110,19 @@ class CandidateGenerationPipeline:
             top_k=self.top_k * 2,  # Get extra for ranking
             min_score=self.min_score
         )
+
+        raw_candidates = _apply_cosine_gate(raw_candidates)
+
+        if not raw_candidates:
+            return {
+        'regulation_chunk_id': regulation_chunk['chunk_id'],
+        'candidates': [],
+        'edge_case': self.edge_handler.classify_case(
+            regulation_chunk['chunk_id'],
+            []
+        ),
+        'processing_time_ms': 0
+    }
         
         # Step 2: Rank candidates
         ranked_candidates = self.ranker.rank_candidates(raw_candidates)

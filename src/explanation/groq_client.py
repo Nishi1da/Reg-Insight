@@ -14,6 +14,11 @@ from datetime import datetime
 
 from groq import Groq
 
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -347,6 +352,8 @@ Respond with JSON only:
     print(f"   Total requests: {stats['total_requests']}")
     print(f"   Success rate: {stats['success_rate_percent']}%")
     print(f"   Avg latency: {stats['avg_latency_ms']:.0f}ms")
+
+    print("DEBUG API:", api_key)
 
     print("\n" + "=" * 60)
     print("=" * 60)

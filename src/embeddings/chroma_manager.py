@@ -106,7 +106,8 @@ class ChromaManager:
             ids: Optional custom IDs (auto-generated if None)
             collection_name: Target collection
         """
-        collection = self.get_collection(collection_name)
+        collection_name = collection_name or self.collection_name
+        collection = self.create_collection(collection_name)
         
         # Generate IDs if not provided
         if ids is None:

@@ -166,6 +166,31 @@ class GapClassifier:
         # Get best match
         best_candidate = scored_candidates[0]
         final_score = best_candidate.final_score
+
+        
+        MIN_FINAL_SCORE = 0.15
+
+        if final_score < MIN_FINAL_SCORE:
+            self.stats['by_category']['unmatched'] += 1
+            
+            return GapClassification(
+                regulation_chunk_id=regulation_chunk_id,
+                regulation_text=regulation_text,
+                regulation_metadata=regulation_metadata,
+                classification=GapClass.UNMATCHED,
+                confidence=0.85,
+                confidence_level='high',
+                bi_encoder_score=best_candidate.bi_encoder_score,
+                cross_encoder_score=best_candidate.cross_encoder_score,
+                final_score=final_score,
+                threshold_min=0.0,
+                threshold_max=MIN_FINAL_SCORE,
+                reasoning=f"Best policy match {final_score:.3f} is below unmatched threshold — no relevant policy exists",
+                recommended_action="No existing policy covers this requirement — create new policy",
+                policy_matches=[],
+                classified_at=datetime.now().isoformat(),
+                config_version=self.config_version
+    )
         
         # Determine classification
         if final_score >= self.thresholds['aligned']['min_score']:
@@ -177,8 +202,8 @@ class GapClassifier:
         else:
             classification = GapClass.GAP
             threshold_info = self.thresholds['gap']
-        
-        self.stats['by_category'][classification.value] += 1
+            
+            self.stats['by_category'][classification.value] += 1
         
         # Calculate confidence
         confidence = self._calculate_confidence(

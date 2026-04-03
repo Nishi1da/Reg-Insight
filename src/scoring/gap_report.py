@@ -186,22 +186,62 @@ class GapReportGenerator:
         
         # Build regulation analysis list
         regulation_analysis = []
+        # ── DROP-IN REPLACEMENT for the report_entry block inside create_batch_report ──
+# Find this in gap_report.py (around line 140) and replace the entire
+# "for cls in classifications:" loop with this version.
+#
+# WHAT WAS WRONG:
+#   - policy_document field was missing entirely
+#   - source field was missing
+#   - best_score field was missing (UI reads best_score, not final_score)
+#   - regulation_text was truncated to 200 chars (too short for UI display)
+#   - policy_text was never included (LLM explanation needs it)
+
         for cls in classifications:
+            # Extract best policy match details for easy UI access
+            best_match      = cls.policy_matches[0] if cls.policy_matches else {}
+            policy_doc      = best_match.get('policy_source') or best_match.get('source') or 'No match found'
+            policy_text     = best_match.get('policy_text')  or best_match.get('text')    or ''
+            policy_chunk_id = best_match.get('policy_chunk_id') or best_match.get('chunk_id') or ''
+
             report_entry = {
+                # Regulation fields
                 'regulation_chunk_id': cls.regulation_chunk_id,
-                'regulation_text': cls.regulation_text[:200],
-                'regulation_source': cls.regulation_metadata.get('source'),
-                'classification': cls.classification.value,
-                'confidence': cls.confidence,
-                'confidence_level': cls.confidence_level,
+                'regulation_text':     cls.regulation_text,          # full text, not truncated
+                'source':              cls.regulation_metadata.get('source', 'unknown'),
+                'regulation':          cls.regulation_metadata.get('source', 'unknown'),
+                'page_number':         cls.regulation_metadata.get('page_number'),
+                'section_header':      cls.regulation_metadata.get('section_header', ''),
+
+                # Classification
+                'classification':      cls.classification.value,
+                'status':              cls.classification.value,      # alias for UI
+                'confidence':          cls.confidence,
+                'confidence_level':    cls.confidence_level,
+
+                # Scores — all three names so UI/downstream always finds one
+                'best_score':          cls.final_score,
+                'final_score':         cls.final_score,
                 'cross_encoder_score': cls.cross_encoder_score,
-                'bi_encoder_score': cls.bi_encoder_score,
-                'final_score': cls.final_score,
-                'policy_matches': cls.policy_matches,
-                'reasoning': cls.reasoning,
-                'recommended_action': cls.recommended_action
+                'bi_encoder_score':    cls.bi_encoder_score,
+
+                # Policy match — top result promoted to top level for easy access
+                'policy_document':     policy_doc,
+                'matched_policy':      policy_doc,                   # alias
+                'policy_text':         policy_text,
+                'policy_chunk_id':     policy_chunk_id,
+                'policy_matches':      cls.policy_matches,           # full list kept
+
+                # Gap details
+                'reasoning':           cls.reasoning,
+                'recommended_action':  cls.recommended_action,
+
+                # Explanation placeholder (filled by run_explanations.py)
+                'explanation':         '',
             }
             regulation_analysis.append(report_entry)
+
+# ── END REPLACEMENT ────────────────────────────────────────────────────────────
         
         # Calculate summary statistics
         total = len(classifications)
