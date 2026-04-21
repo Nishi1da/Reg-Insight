@@ -94,24 +94,49 @@ class GapClassifier:
         
         self.stats = {
             'total_classified': 0,
-            'by_category': {cat: 0 for cat in ['aligned', 'partial', 'gap', 'unmatched']},
+            'by_category': {cat: 0 for cat in ['aligned', 'partial', 'gap','unmatched']},
             'avg_confidence': 0.0
         }
     
     def _load_config(self, path: str) -> Dict:
         """Load classification configuration"""
         default_config = {
-            'thresholds': {
-                'aligned': {'min_score': 0.7, 'max_score': 1.0, 'description': 'Aligned', 'action': 'None'},
-                'partial': {'min_score': 0.4, 'max_score': 0.69, 'description': 'Partial', 'action': 'Review'},
-                'gap': {'min_score': 0.0, 'max_score': 0.39, 'description': 'Gap', 'action': 'Update'}
+        'thresholds': {
+            'aligned': {
+                'min_score': 0.12,
+                'max_score': 1.0,
+                'description': 'Aligned',
+                'action': 'None'
             },
-            'confidence_weights': {
-                'cross_encoder': 0.5, 'bi_encoder': 0.25, 'candidate_rank': 0.15, 'score_variance': 0.1
+            'partial': {
+                'min_score': 0.05,
+                'max_score': 0.119,
+                'description': 'Partial',
+                'action': 'Review'
             },
-            'scoring': {'bi_encoder_weight': 0.3, 'cross_encoder_weight': 0.7}
+            'gap': {
+                'min_score': 0.0,
+                'max_score': 0.049,
+                'description': 'Gap',
+                'action': 'Update'
+            }
+        },
+        'confidence_weights': {
+            'cross_encoder': 0.5,
+            'bi_encoder': 0.25,
+            'candidate_rank': 0.15,
+            'score_variance': 0.1
+        },
+        'scoring': {
+            'bi_encoder_weight': 0.3,
+            'cross_encoder_weight': 0.7,
+            'confidence_levels': {
+                'high': 0.70,
+                'medium': 0.40
+            }
         }
-        
+    }
+
         try:
             with open(path, 'r') as f:
                 return yaml.safe_load(f)
@@ -148,7 +173,7 @@ class GapClassifier:
                 regulation_chunk_id=regulation_chunk_id,
                 regulation_text=regulation_text,
                 regulation_metadata=regulation_metadata,
-                classification=GapClass.UNMATCHED,
+                classification=GapClass.GAP,
                 confidence=0.0,
                 confidence_level='low',
                 bi_encoder_score=0.0,
@@ -192,18 +217,20 @@ class GapClassifier:
                 config_version=self.config_version
     )
         
-        # Determine classification
+        # Determine classification (CLEAN VERSION)
         if final_score >= self.thresholds['aligned']['min_score']:
             classification = GapClass.ALIGNED
             threshold_info = self.thresholds['aligned']
+
         elif final_score >= self.thresholds['partial']['min_score']:
             classification = GapClass.PARTIAL
             threshold_info = self.thresholds['partial']
-        else:
-            classification = GapClass.GAP
-            threshold_info = self.thresholds['gap']
             
-            self.stats['by_category'][classification.value] += 1
+        else:
+                classification = GapClass.GAP
+                threshold_info = self.thresholds['gap']
+                # Update stats for ALL categories
+                self.stats['by_category'][classification.value] += 1
         
         # Calculate confidence
         confidence = self._calculate_confidence(
@@ -318,10 +345,10 @@ class GapClassifier:
             if best.cross_encoder_score < 0.3:
                 reasons.append("Cross-encoder indicates poor semantic alignment")
             reasons.append("Current policy does not adequately address this requirement")
-        
+
         elif classification == GapClass.UNMATCHED:
             reasons.append("No candidate policies found")
-            reasons.append("Requirement may be entirely missing from policy corpus")
+            reasons.append("Requirement may be entirely missing from policy corpus")    
         
         return "; ".join(reasons)
     

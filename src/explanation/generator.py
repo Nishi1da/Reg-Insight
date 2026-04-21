@@ -42,17 +42,35 @@ class ExplanationGenerator:
     """
 
     def __init__(
-        self,
-        config_path: str = "config/groq_config.yaml",
-        api_key: Optional[str] = None
-    ):
-        self.config = self._load_config(config_path)
-
-        # Get API key
-        self.api_key = (
-            api_key
-            or self.config.get('groq', {}).get('api_key')
-        )
+            self,
+            config_path: str = "config/groq_config.yaml",
+            api_key: Optional[str] = None
+            ):
+        from dotenv import load_dotenv
+        import os
+        
+        env_path = Path(__file__).parent.parent.parent / ".env"
+        load_dotenv(dotenv_path=env_path)
+        
+        if not Path(config_path).is_absolute():
+            config_path = str(Path(__file__).parent.parent.parent / config_path)
+            self.config = self._load_config(config_path)
+            
+            # Get API key: explicit arg → .env → yaml config
+            self.api_key = (
+                api_key
+                or os.environ.get('GROQ_API_KEY')
+                or self.config.get('groq', {}).get('api_key')
+                
+                )
+            
+            self.config = self._load_config(config_path)
+            
+            # Get API key
+            self.api_key = (
+                api_key
+                or self.config.get('groq', {}).get('api_key')
+                )
 
         if not self.api_key or self.api_key == 'gsk_your_key_here':
             raise ValueError(
@@ -98,7 +116,7 @@ class ExplanationGenerator:
 
     def _load_config(self, path: str) -> Dict:
         try:
-            with open(path) as f:
+            with open(path, encoding='utf-8') as f:
                 return yaml.safe_load(f)
         except FileNotFoundError:
             logger.warning(f"Config not found: {path}")
@@ -504,4 +522,3 @@ if __name__ == "__main__":
         print("   Connection + daily limit check")
         print("   Post-processing pipeline")
         print("   CLI interface")
-        print("\n Ready for Week 6: Prompt Engineering!")

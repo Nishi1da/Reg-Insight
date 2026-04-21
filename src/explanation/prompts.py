@@ -153,6 +153,60 @@ This requirement has zero policy coverage. Analyze and respond ONLY with JSON:
             description="Analysis for unmatched requirements"
         )
 
+        # Template v3: Few-shot with examples
+        gap_analysis_v3_fewshot = """Analyze this regulatory compliance gap.
+
+CONTEXT:
+- Regulation: {regulation_source}
+- Policy: {policy_source}
+- Classification: {classification}
+- System confidence: {confidence:.2f}
+
+REGULATION REQUIREMENT:
+{regulation_text}
+
+COMPANY POLICY:
+{policy_text}
+
+SIMILARITY SCORES:
+- Final score: {final_score:.2f}
+- Cross-encoder: {cross_encoder_score:.2f}
+- Bi-encoder: {bi_encoder_score:.2f}
+
+EXAMPLE OUTPUT (follow this structure exactly):
+{{
+    "summary": "Policy does not address MFA requirement for privileged access.",
+    "recommendation": "Implement MFA for all admin accounts using TOTP or hardware keys.",
+    "risk_level": "high",
+    "key_differences": ["MFA not mentioned", "Only password auth covered"],
+    "regulatory_intent": "Prevent unauthorized privileged access",
+    "policy_coverage": "Covers basic authentication but omits MFA",
+    "remediation_priority": "immediate",
+    "confidence": "high"
+}}
+
+Now analyze the actual regulation/policy above and respond ONLY with JSON:
+{{
+    "summary": "Concise gap assessment (max 200 chars)",
+    "recommendation": "Specific actionable compliance fix",
+    "risk_level": "low|medium|high|critical",
+    "key_differences": ["gap 1", "gap 2", "gap 3"],
+    "regulatory_intent": "What this regulation aims to achieve",
+    "policy_coverage": "What the policy covers and misses",
+    "remediation_priority": "immediate|short_term|long_term",
+    "confidence": "high|medium|low"
+}}"""
+
+        self.register_template(
+            name="v3_fewshot",
+            version="3.0.0",
+            template=gap_analysis_v3_fewshot,
+            description="Few-shot gap analysis with examples"
+        )
+
+
+
+
     def register_template(
         self,
         name: str,

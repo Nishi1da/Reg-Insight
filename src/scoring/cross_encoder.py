@@ -64,6 +64,43 @@ class CrossEncoderScorer:
         # Simple hash of combined text
         return f"{hash(reg_text[:100])}_{hash(policy_text[:100])}"
     
+    def predict(self, pairs: List[Tuple[str, str]]) -> List[float]:
+        """
+        Score list of (regulation, policy) pairs.
+        Returns scores in [0, 1] range.
+        """
+        if not pairs:
+            return []
+        
+        # Convert to list of lists for CrossEncoder
+        texts = [[p[0], p[1]] for p in pairs]
+        
+        # Get raw scores from model
+        raw_scores = self.model.predict(
+            texts, 
+            show_progress_bar=False,
+            batch_size=self.batch_size
+        )
+        
+        # Process scores
+        results = []
+        for raw in raw_scores:
+            score = float(raw)
+            
+            # Handle different model output ranges
+            if "stsb" in self.model_name.lower():
+                # STS-B models output 0-5, normalize to 0-1
+                score = score / 5.0
+            elif score < -0.1 or score > 1.1:
+                # Raw logits, apply sigmoid
+                score = 1 / (1 + np.exp(-score))
+            
+            # Clip to valid range
+            score = max(0.0, min(1.0, score))
+            results.append(score)
+        
+        return results
+    
     def score_pair(
         self,
         regulation_text: str,
@@ -71,44 +108,21 @@ class CrossEncoderScorer:
         regulation_chunk_id: str = "",
         policy_chunk_id: str = ""
     ) -> CrossEncoderScore:
-        """
-        Score a single regulation-policy pair
-        
-        Args:
-            regulation_text: Regulation chunk text
-            policy_text: Policy chunk text
-            regulation_chunk_id: ID for tracking
-            policy_chunk_id: ID for tracking
-        
-        Returns:
-            CrossEncoderScore with score 0-1
-        """
+        """Score a single regulation-policy pair."""
         start_time = time.time()
         
         # Check cache
         cache_key = self._make_cache_key(regulation_text, policy_text)
         if cache_key in self._cache:
             score = self._cache[cache_key]
-            inference_time = 0.0  # Cache hit
+            inference_time = 0.0
         else:
-            # Prepare input
-            pair = [regulation_text, policy_text]
-            
-            # Run inference
-            with torch.no_grad():
-                raw_score = self.model.predict([pair], show_progress_bar=False)[0]
-            
-            
-            raw = raw_score
-            if hasattr(raw, '__len__'):
-                probs = torch.softmax(torch.tensor(raw), dim=0)
-                score = float(probs[2])
-            else:
-                score = float(torch.sigmoid(torch.tensor(raw)))
+            # Use predict method for consistency
+            scores = self.predict([(regulation_text, policy_text)])
+            score = scores[0]
             
             # Store in cache
             self._cache[cache_key] = score
-            
             inference_time = (time.time() - start_time) * 1000
         
         # Update stats
@@ -132,16 +146,7 @@ class CrossEncoderScorer:
         pairs: List[Tuple[str, str, str, str]],  # (reg_id, reg_text, pol_id, pol_text)
         show_progress: bool = True
     ) -> List[CrossEncoderScore]:
-        """
-        Score multiple pairs in batches for efficiency
-        
-        Args:
-            pairs: List of (reg_id, reg_text, pol_id, pol_text)
-            show_progress: Show progress bar
-        
-        Returns:
-            List of CrossEncoderScore
-        """
+        """Score multiple pairs in batches."""
         if not pairs:
             return []
         
@@ -155,36 +160,21 @@ class CrossEncoderScorer:
             
             batch_start = time.time()
             
-            # Prepare texts for model
-            batch_texts = [[p[1], p[3]] for p in batch]  # (reg_text, pol_text)
+            # Extract just the texts for prediction
+            text_pairs = [(p[1], p[3]) for p in batch]  # (reg_text, pol_text)
             
-            # Run batch inference
-            with torch.no_grad():
-                raw_scores = self.model.predict(
-                    batch_texts,
-                    show_progress_bar=False,
-                    batch_size=len(batch_texts)
-                )
+            # Score batch
+            scores = self.predict(text_pairs)
             
-            # Convert scores
             batch_time = (time.time() - batch_start) * 1000
             
+            # Create result objects
             for i, (reg_id, reg_text, pol_id, pol_text) in enumerate(batch):
-                raw = raw_scores[i]
-                if hasattr(raw, '__len__'):
-                    # NLI model: outputs [contradiction, neutral, entailment]
-                    #  the entailment score (index 2) as  match score
-                    probs = torch.softmax(torch.tensor(raw), dim=0)
-                    score = float(probs[2])
-                else:
-                    # Original ms-marco model: single score
-                    score = float(torch.sigmoid(torch.tensor(raw)))
-                
                 results.append(CrossEncoderScore(
                     regulation_chunk_id=reg_id,
                     policy_chunk_id=pol_id,
                     pair_text=(reg_text[:100], pol_text[:100]),
-                    score=score,
+                    score=scores[i],
                     inference_time_ms=batch_time / len(batch),
                     model_version=self.model_name
                 ))
@@ -194,9 +184,7 @@ class CrossEncoderScorer:
             if show_progress and (batch_idx + 1) % 10 == 0:
                 logger.info(f"  Processed batch {batch_idx + 1}/{total_batches}")
         
-        # Update stats
         self.stats['total_pairs_scored'] += len(pairs)
-        
         return results
     
     def compare_with_bi_encoder(
@@ -328,6 +316,25 @@ if __name__ == "__main__":
     print("\n4. Testing cache (scoring same pair again)...")
     cached_result = scorer.score_pair(reg_text, policy_text)
     print(f"   Cached time: {cached_result.inference_time_ms:.1f}ms (should be 0.0)")
+
+        # Test discrimination
+    print("\n2.5 Testing discrimination...")
+    pairs = [
+        ("Organizations must implement MFA for all admin access.",
+         "We require two-factor authentication for administrator logins."),
+        ("Organizations must implement MFA for all admin access.",
+         "Our company provides health insurance to employees.")
+    ]
+    
+    scores = scorer.predict(pairs)
+    print(f"   MFA pair:     {scores[0]:.4f}")
+    print(f"   Unrelated:    {scores[1]:.4f}")
+    print(f"   Difference:   {scores[0] - scores[1]:.4f}")
+    
+    if scores[0] > scores[1]:
+        print("   ✅ Relevant scores higher")
+    else:
+        print("   ❌ No discrimination")
     
     # Show stats
     print("\n5. Final statistics:")

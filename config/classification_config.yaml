@@ -39,3 +39,14 @@ visualization:
   score_bins: 20
   show_distribution: true
   highlight_thresholds: true
+
+  thresholds:
+  aligned:
+    min_score: 0.12
+    max_score: 1.0
+  partial:
+    min_score: 0.05
+    max_score: 0.119
+  gap:
+    min_score: 0.0
+    max_score: 0.049

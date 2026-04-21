@@ -147,6 +147,14 @@ def _is_valid(text: str) -> bool:
     for pattern in _GOVERNANCE_PATTERNS:
         if re.search(pattern, lower):
             return False
+        
+    # Reject TOC lines — dotted leaders + page number
+    if re.search(r'\.{4,}\s*\d+', stripped):
+        return False
+
+    # Reject lines that are purely heading + page number (no sentence body)
+    if re.match(r'^[\d\.]+\s+[A-Z][^\n]{5,60}\.{4,}\s*\d+', stripped):
+        return False    
 
     # Has obligation keyword — likely a valid regulatory requirement
     has_obligation = bool(re.search(

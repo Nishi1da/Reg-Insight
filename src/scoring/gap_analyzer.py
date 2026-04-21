@@ -20,6 +20,7 @@ from scoring.unsupported_detector import UnsupportedRequirementsDetector
 from scoring.gap_report import GapReportGenerator
 from scoring.confidence_calibrator import ConfidenceCalibrator
 
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class GapAnalyzer:
         }
 
         logger.info("Gap Analyzer initialized successfully")
+
 
     # ------------------------------------------------------------------ #
     #  CALIBRATION                                                         #

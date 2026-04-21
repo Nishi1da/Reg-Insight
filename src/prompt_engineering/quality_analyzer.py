@@ -551,6 +551,8 @@ class PromptQualityAnalyzer:
             )
         }
 
+# Alias for backward compatibility with verify script
+QualityAnalyzer = PromptQualityAnalyzer
 
 # Test
 if __name__ == "__main__":
