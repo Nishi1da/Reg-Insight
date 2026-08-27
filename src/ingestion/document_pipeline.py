@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 from .pdf_loader import PDFLoader
 from .chunker import DocumentChunker
-from ..embeddings.chroma_manager import ChromaManager
+from src.embeddings.chroma_manager import ChromaManager
 
 
 class DocumentPipeline:

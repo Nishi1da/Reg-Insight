@@ -291,25 +291,19 @@ def _run_pipeline(job_id: str, reg_path: Path, pol_path: Path):
     try:
         # Step 1: Ingest regulation PDF
         _update("Ingesting regulation PDF into ChromaDB")
-        from src.embeddings.ingestion_pipeline import IngestionPipeline
-        embedder   = IngestionPipeline()
-        reg_result = embedder.ingest_from_pipeline(
-            pdf_paths       = [str(reg_path)],
-            collection_name = "regulations",
-            chunk_size      = 512,
-            chunk_overlap   = 50
-        )
-        logger.info("[job:%s] Regulation ingested: %s", job_id, reg_result)
-
-        # Step 2: Ingest policy PDF
+        from src.ingestion.document_pipeline import DocumentPipeline
+        doc_pipeline = DocumentPipeline(chunk_size=512, chunk_overlap=50)
+        
+        reg_result = doc_pipeline.process_file(str(reg_path))
+        if not reg_result['success']:
+            raise ValueError(f"Regulation ingestion failed: {reg_result['error']}")
+        logger.info("[job:%s] Regulation ingested: %s chunks", job_id, reg_result['chunks'])
+        
         _update("Ingesting policy PDF into ChromaDB")
-        pol_result = embedder.ingest_from_pipeline(
-            pdf_paths       = [str(pol_path)],
-            collection_name = "policies",
-            chunk_size      = 512,
-            chunk_overlap   = 50
-        )
-        logger.info("[job:%s] Policy ingested: %s", job_id, pol_result)
+        pol_result = doc_pipeline.process_file(str(pol_path))
+        if not pol_result['success']:
+            raise ValueError(f"Policy ingestion failed: {pol_result['error']}")
+        logger.info("[job:%s] Policy ingested: %s chunks", job_id, pol_result['chunks'])
 
         # Step 3: Run gap analysis
         _update("Running gap analysis")
@@ -321,7 +315,8 @@ def _run_pipeline(job_id: str, reg_path: Path, pol_path: Path):
         analyzer    = GapAnalyzer()
         gap_results = analyzer.analyze_document(
             limit             = None,
-            progress_callback = _progress
+            progress_callback = _progress,
+            source_filter=reg_result['source']
         )
 
         if not gap_results:

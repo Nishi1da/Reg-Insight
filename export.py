@@ -58,10 +58,10 @@ def _save_snapshot(report: dict, label: str = "") -> Path:
     export = {
         **report,
         "_audit": {
-            "generated_at":  datetime.now().isoformat(),
-            "report_hash":   _report_hash(report),
+            "generated_at":   datetime.now().isoformat(),
+            "report_hash":    _report_hash(report),
             "snapshot_label": label or filename,
-            "tool":          "REG-INSIGHT",
+            "tool":           "REG-INSIGHT",
         }
     }
     with open(path, "w", encoding="utf-8") as f:
@@ -83,28 +83,46 @@ def _load_snapshot(path: Path) -> dict:
 #  MARKDOWN REPORT GENERATOR
 # ══════════════════════════════════════════════════════════════════════════════
 
-def generate_markdown_report(report: dict) -> str:
+def generate_markdown_report(report: dict, norm_items: list = None) -> str:
+    """
+    Generate a Markdown compliance report.
+
+    Parameters
+    ----------
+    report     : raw report dict (used for summary stats + hash)
+    norm_items : normalized item list from st.session_state.reg_items
+                 (preferred). Falls back to report["regulation_analysis"].
+    """
+    # ── Resolve item list ────────────────────────────────────────────────
+    all_items = norm_items if norm_items is not None else report.get("regulation_analysis", [])
+
     total, aligned, partial, gap, unmatched, coverage = _get_summary_stats(report)
-    items    = report.get("regulation_analysis", [])
     h        = _report_hash(report)
     ts       = datetime.now().strftime("%d %B %Y, %H:%M")
-    gap_only = [i for i in items if i.get("classification") in ("gap", "unmatched")]
+    gap_only = [i for i in all_items if i.get("classification") in ("gap", "unmatched")]
 
     # ── Risk breakdown ────────────────────────────────────────────────────
     risk_counts = {"high": 0, "medium": 0, "low": 0}
-    for item in items:
-        exp  = item.get("llm_explanation") or {}
+    for i in all_items:
+        exp  = i.get("llm_explanation") or {}
         risk = (exp.get("risk_level") or "low").lower()
         if risk in risk_counts:
             risk_counts[risk] += 1
 
     # ── Per-regulation breakdown ──────────────────────────────────────────
+    import re as _re
+
+    def _clean_reg_name(raw_src: str) -> str:
+        stem = Path(raw_src).stem if raw_src else "Unknown"
+        stem = _re.sub(r'^[0-9a-f]{6,}_', '', stem)
+        return stem.replace("_", " ").replace("-", " ").title()
+
     reg_stats: dict[str, dict] = {}
-    for item in items:
-        src = Path(
-            item.get("regulation_source") or item.get("source") or "Unknown"
-        ).stem
-        cls = item.get("classification", "unmatched")
+    for i in all_items:
+        src = _clean_reg_name(
+            i.get("regulation_source") or i.get("source") or "Unknown"
+        )
+        cls = i.get("classification", "unmatched")
         if src not in reg_stats:
             reg_stats[src] = {"aligned": 0, "partial": 0, "gap": 0, "unmatched": 0}
         if cls in reg_stats[src]:
@@ -131,11 +149,11 @@ def generate_markdown_report(report: dict) -> str:
     lines.append("| Metric | Count | % of Total |")
     lines.append("|--------|------:|-----------:|")
     for label, val in [
-        ("✅ Aligned",    aligned),
-        ("🟡 Partial",    partial),
-        ("🔴 Gap",        gap),
-        ("⚪ Unmatched",  unmatched),
-        ("**Total**",     total),
+        ("✅ Aligned",   aligned),
+        ("🟡 Partial",   partial),
+        ("🔴 Gap",       gap),
+        ("⚪ Unmatched", unmatched),
+        ("**Total**",    total),
     ]:
         pct = f"{round(val/total*100,1)}%" if total else "—"
         lines.append(f"| {label} | {val} | {pct} |")
@@ -177,26 +195,28 @@ def generate_markdown_report(report: dict) -> str:
         "ordered by risk level (High → Medium → Low).\n"
     )
 
-    def _risk_order(item):
-        r = (item.get("llm_explanation") or {}).get("risk_level", "low").lower()
+    def _risk_order(entry):
+        r = (entry.get("llm_explanation") or {}).get("risk_level", "low").lower()
         return {"high": 0, "medium": 1, "low": 2}.get(r, 3)
 
     sorted_gaps = sorted(gap_only, key=_risk_order)
 
-    for i, item in enumerate(sorted_gaps, 1):
-        exp    = item.get("llm_explanation") or {}
-        risk   = (exp.get("risk_level") or "unknown").upper()
-        cls    = item.get("classification", "unmatched").title()
-        src    = Path(item.get("regulation_source") or item.get("source") or "").stem
-        score  = float(item.get("final_score") or item.get("best_score") or 0)
-        text   = item.get("regulation_text", "")[:200].replace("\n", " ")
+    for idx, entry in enumerate(sorted_gaps, 1):
+        exp     = entry.get("llm_explanation") or {}
+        risk    = (exp.get("risk_level") or "unknown").upper()
+        cls     = entry.get("classification", "unmatched").title()
+        src     = Path(entry.get("regulation_source") or entry.get("source") or "").stem
+        score   = float(entry.get("final_score") or entry.get("best_score") or 0)
+        text    = entry.get("regulation_text", "")[:200].replace("\n", " ")
         summary = exp.get("summary", "")
-        action  = exp.get("recommended_action") or item.get("recommended_action") or ""
+        action  = exp.get("recommended_action") or entry.get("recommended_action") or ""
 
-        lines.append(f"### {i}. [{risk}] {cls} — {src}\n")
+        lines.append(f"### {idx}. [{risk}] {cls} — {src}\n")
         lines.append(f"**Similarity Score:** {score:.3f}  ")
-        lines.append(f"\n**Regulation Text:**  \n> {text}{'…' if len(item.get('regulation_text',''))>200 else ''}\n")
-
+        lines.append(
+            f"\n**Regulation Text:**  \n> {text}"
+            f"{'…' if len(entry.get('regulation_text',''))>200 else ''}\n"
+        )
         if summary:
             lines.append(f"**AI Analysis:**  \n{summary}\n")
         if action:
@@ -245,13 +265,26 @@ def _enriched_json(report: dict) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def page_export_v2():
-    if not st.session_state.analysis_done or not st.session_state.report_data:
+    # ── Guard: need both analysis_done AND report_data ────────────────────
+    if not st.session_state.get("analysis_done") or not st.session_state.get("report_data"):
         st.warning("No analysis loaded. Go to **Run Analysis** first.")
+        if st.button("Go to Run Analysis"):
+            st.session_state.page = "analyze"
+            st.rerun()
         return
 
     report = st.session_state.report_data
-    items  = report.get("regulation_analysis", [])
-    total, aligned, partial, gap, unmatched, coverage = _get_summary_stats(report)
+    # Prefer the already-normalized list; fall back to raw report key
+    items  = st.session_state.get("reg_items") or report.get("regulation_analysis", [])
+
+    # ── Derive stats from items directly (raw report summary block is unreliable) ──
+    total     = len(items)
+    aligned   = sum(1 for i in items if i.get("classification") == "aligned")
+    partial   = sum(1 for i in items if i.get("classification") == "partial")
+    gap       = sum(1 for i in items if i.get("classification") == "gap")
+    unmatched = sum(1 for i in items if i.get("classification") == "unmatched")
+    coverage  = round(aligned / total * 100, 1) if total else 0
+
     ts_str = datetime.now().strftime("%Y%m%d_%H%M")
     h      = _report_hash(report)[:8]
 
@@ -295,7 +328,7 @@ def page_export_v2():
                 "Formatted report with executive summary, per-regulation "
                 "tables, and prioritised gap list. Suitable for stakeholder sharing."
             )
-            md_content = generate_markdown_report(report)
+            md_content = generate_markdown_report(report, norm_items=items)
             st.download_button(
                 label="⬇️ Download Markdown",
                 data=md_content,
@@ -323,8 +356,8 @@ def page_export_v2():
             ])
             gap_counter = 0
             for item in items:
-                exp    = item.get("llm_explanation") or {}
-                meta   = item.get("regulation_metadata") or {}
+                exp     = item.get("llm_explanation") or {}
+                meta    = item.get("regulation_metadata") or {}
                 matches = item.get("policy_matches") or []
                 top     = matches[0] if matches else {}
                 pol_src = (
@@ -461,7 +494,6 @@ def page_export_v2():
                                  use_container_width=True):
                         try:
                             loaded = _load_snapshot(snap_path)
-                            # normalize_report is in app.py — call from there
                             st.session_state.report_data       = loaded
                             st.session_state.analysis_done     = True
                             st.session_state.analysis_source   = "snapshot"
@@ -485,12 +517,19 @@ def page_export_v2():
             "Use your browser's print function (Ctrl+P) after expanding this view."
         )
 
+        def _clean_reg_name(raw_src: str) -> str:
+            """Turn a hashed filename like '97f4cbfd_regulation' into a readable label."""
+            import re as _re
+            stem = Path(raw_src).stem if raw_src else "Unknown"
+            stem = _re.sub(r'^[0-9a-f]{6,}_', '', stem)
+            return stem.replace("_", " ").replace("-", " ").title()
+
         # Collect per-regulation stats for print view
         reg_stats: dict[str, dict] = {}
         for item in items:
-            src = Path(
+            src = _clean_reg_name(
                 item.get("regulation_source") or item.get("source") or "Unknown"
-            ).stem
+            )
             cls = item.get("classification", "unmatched")
             if src not in reg_stats:
                 reg_stats[src] = {"aligned": 0, "partial": 0, "gap": 0, "unmatched": 0, "total": 0}
@@ -506,91 +545,105 @@ def page_export_v2():
             )
         )[:5]
 
-        print_html = f"""
-        <div style="font-family:'DM Sans',sans-serif;max-width:900px;margin:0 auto;
-                    padding:2rem;background:white;border:1px solid #E2E8F0;border-radius:12px">
+        # ── Build reg table rows separately to avoid nested f-string issues ──
+        reg_rows_html = ""
+        for reg, counts in sorted(reg_stats.items()):
+            t   = counts["total"]
+            cov = round((counts["aligned"] + counts["partial"]) / t * 100, 1) if t else 0
+            reg_rows_html += (
+                f'<tr>'
+                f'<td style="padding:0.45rem 0.5rem;border:1px solid #E2E8F0">{reg}</td>'
+                f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">{counts["aligned"]}</td>'
+                f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">{counts["partial"]}</td>'
+                f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">{counts["gap"]}</td>'
+                f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">{t}</td>'
+                f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">{cov}%</td>'
+                f'</tr>'
+            )
 
-            <div style="border-bottom:2px solid #0D1B2A;padding-bottom:1rem;margin-bottom:1.5rem">
-                <h2 style="margin:0;font-family:'DM Serif Display',serif;color:#0D1B2A">
-                    REG-INSIGHT — Compliance Report
-                </h2>
-                <div style="font-size:0.8rem;color:#94A3B8;margin-top:0.25rem">
-                    Generated: {datetime.now().strftime('%d %B %Y %H:%M')}
-                    &nbsp;·&nbsp; Hash: <code>{h}</code>
-                </div>
-            </div>
-
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem">
-                <div style="text-align:center;padding:1rem;background:#E8F5EE;border-radius:8px">
-                    <div style="font-size:1.8rem;font-weight:700;color:#1E7E55">{aligned}</div>
-                    <div style="font-size:0.72rem;color:#64748B;text-transform:uppercase">Aligned</div>
-                </div>
-                <div style="text-align:center;padding:1rem;background:#FDF3E0;border-radius:8px">
-                    <div style="font-size:1.8rem;font-weight:700;color:#D4820A">{partial}</div>
-                    <div style="font-size:0.72rem;color:#64748B;text-transform:uppercase">Partial</div>
-                </div>
-                <div style="text-align:center;padding:1rem;background:#FDECEA;border-radius:8px">
-                    <div style="font-size:1.8rem;font-weight:700;color:#C0392B">{gap}</div>
-                    <div style="font-size:0.72rem;color:#64748B;text-transform:uppercase">Gaps</div>
-                </div>
-                <div style="text-align:center;padding:1rem;background:#F1F5F9;border-radius:8px">
-                    <div style="font-size:1.8rem;font-weight:700;color:#475569">{coverage}%</div>
-                    <div style="font-size:0.72rem;color:#64748B;text-transform:uppercase">Coverage</div>
-                </div>
-            </div>
-
-            <h3 style="color:#0D1B2A;font-size:1rem;margin-bottom:0.75rem">
-                Coverage by Regulation
-            </h3>
-            <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin-bottom:1.5rem">
-                <thead>
-                    <tr style="background:#F8FAFC">
-                        <th style="text-align:left;padding:0.5rem;border:1px solid #E2E8F0">Regulation</th>
-                        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0;color:#1E7E55">Aligned</th>
-                        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0;color:#D4820A">Partial</th>
-                        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0;color:#C0392B">Gap</th>
-                        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0">Total</th>
-                        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0">Coverage</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {"".join(
-                        f'<tr>'
-                        f'<td style="padding:0.45rem 0.5rem;border:1px solid #E2E8F0">{reg}</td>'
-                        f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">{counts["aligned"]}</td>'
-                        f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">{counts["partial"]}</td>'
-                        f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">{counts["gap"]}</td>'
-                        f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">{counts["total"]}</td>'
-                        f'<td style="text-align:center;padding:0.45rem;border:1px solid #E2E8F0">'
-                        f'{round((counts["aligned"]+counts["partial"])/counts["total"]*100,1) if counts["total"] else 0}%</td>'
-                        f'</tr>'
-                        for reg, counts in sorted(reg_stats.items())
-                    )}
-                </tbody>
-            </table>
-
-            <h3 style="color:#0D1B2A;font-size:1rem;margin-bottom:0.75rem">
-                Top 5 Priority Gaps
-            </h3>
-            {"".join(
+        # ── Build top-gaps cards separately ───────────────────────────────
+        gap_cards_html = ""
+        for idx, item in enumerate(top_gaps):
+            risk  = (item.get("llm_explanation") or {}).get("risk_level", "").upper()
+            score = float(item.get("final_score") or item.get("best_score") or 0)
+            text  = item.get("regulation_text", "")[:180]
+            gap_cards_html += (
                 f'<div style="border:1px solid #FECACA;background:#FEF2F2;'
                 f'border-radius:8px;padding:0.85rem 1rem;margin-bottom:0.6rem">'
                 f'<div style="font-weight:600;font-size:0.82rem;color:#991B1B;margin-bottom:0.3rem">'
-                f'#{i+1} · {(item.get("llm_explanation") or {}).get("risk_level","").upper()} RISK'
+                f'#{idx+1} &middot; {risk} RISK</div>'
+                f'<div style="font-size:0.8rem;color:#374151;margin-bottom:0.3rem">{text}…</div>'
+                f'<div style="font-size:0.75rem;color:#6B7280">Score: {score:.3f}</div>'
                 f'</div>'
-                f'<div style="font-size:0.8rem;color:#374151;margin-bottom:0.3rem">'
-                f'{item.get("regulation_text","")[:180]}…</div>'
-                f'<div style="font-size:0.75rem;color:#6B7280">'
-                f'Score: {float(item.get("final_score") or item.get("best_score") or 0):.3f}'
-                f'</div></div>'
-                for i, item in enumerate(top_gaps)
-            )}
+            )
 
-            <div style="margin-top:1.5rem;padding-top:1rem;border-top:1px solid #E2E8F0;
-                        font-size:0.72rem;color:#94A3B8;text-align:center">
-                Generated by REG-INSIGHT · Report Hash: {h} ·
-                For compliance review purposes only
-            </div>
-        </div>
-        """
-        st.markdown(print_html, unsafe_allow_html=True)
+        generated_at = datetime.now().strftime('%d %B %Y %H:%M')
+
+        print_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {{ font-family: 'DM Sans', Arial, sans-serif; margin: 0; padding: 1rem; background: #F8FAFC; }}
+  * {{ box-sizing: border-box; }}
+</style>
+</head>
+<body>
+<div style="max-width:900px;margin:0 auto;padding:2rem;background:white;
+            border:1px solid #E2E8F0;border-radius:12px">
+
+  <div style="border-bottom:2px solid #0D1B2A;padding-bottom:1rem;margin-bottom:1.5rem">
+    <h2 style="margin:0;font-family:serif;color:#0D1B2A">REG-INSIGHT — Compliance Report</h2>
+    <div style="font-size:0.8rem;color:#94A3B8;margin-top:0.25rem">
+      Generated: {generated_at} &nbsp;&middot;&nbsp; Hash: <code>{h}</code>
+    </div>
+  </div>
+
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.5rem">
+    <div style="text-align:center;padding:1rem;background:#E8F5EE;border-radius:8px">
+      <div style="font-size:1.8rem;font-weight:700;color:#1E7E55">{aligned}</div>
+      <div style="font-size:0.72rem;color:#64748B;text-transform:uppercase">Aligned</div>
+    </div>
+    <div style="text-align:center;padding:1rem;background:#FDF3E0;border-radius:8px">
+      <div style="font-size:1.8rem;font-weight:700;color:#D4820A">{partial}</div>
+      <div style="font-size:0.72rem;color:#64748B;text-transform:uppercase">Partial</div>
+    </div>
+    <div style="text-align:center;padding:1rem;background:#FDECEA;border-radius:8px">
+      <div style="font-size:1.8rem;font-weight:700;color:#C0392B">{gap}</div>
+      <div style="font-size:0.72rem;color:#64748B;text-transform:uppercase">Gaps</div>
+    </div>
+    <div style="text-align:center;padding:1rem;background:#F1F5F9;border-radius:8px">
+      <div style="font-size:1.8rem;font-weight:700;color:#475569">{coverage}%</div>
+      <div style="font-size:0.72rem;color:#64748B;text-transform:uppercase">Coverage</div>
+    </div>
+  </div>
+
+  <h3 style="color:#0D1B2A;font-size:1rem;margin-bottom:0.75rem">Coverage by Regulation</h3>
+  <table style="width:100%;border-collapse:collapse;font-size:0.82rem;margin-bottom:1.5rem">
+    <thead>
+      <tr style="background:#F8FAFC">
+        <th style="text-align:left;padding:0.5rem;border:1px solid #E2E8F0">Regulation</th>
+        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0;color:#1E7E55">Aligned</th>
+        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0;color:#D4820A">Partial</th>
+        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0;color:#C0392B">Gap</th>
+        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0">Total</th>
+        <th style="text-align:center;padding:0.5rem;border:1px solid #E2E8F0">Coverage</th>
+      </tr>
+    </thead>
+    <tbody>{reg_rows_html}</tbody>
+  </table>
+
+  <h3 style="color:#0D1B2A;font-size:1rem;margin-bottom:0.75rem">Top 5 Priority Gaps</h3>
+  {gap_cards_html}
+
+  <div style="margin-top:1.5rem;padding-top:1rem;border-top:1px solid #E2E8F0;
+              font-size:0.72rem;color:#94A3B8;text-align:center">
+    Generated by REG-INSIGHT &middot; Report Hash: {h} &middot;
+    For compliance review purposes only
+  </div>
+</div>
+</body>
+</html>"""
+
+        import streamlit.components.v1 as components
+        components.html(print_html, height=950, scrolling=True)

@@ -47,6 +47,8 @@ class PrecisionScoredCandidate:
         return {
             'regulation_chunk_id': self.regulation_chunk_id,
             'policy_chunk_id': self.policy_chunk_id,
+              'policy_text': self.policy_text,
+              'policy_source': self.policy_metadata.get('source', '') if self.policy_metadata else '',
             'bi_encoder_score': round(self.bi_encoder_score, 4),
             'cross_encoder_score': round(self.cross_encoder_score, 4),
             'final_score': round(self.final_score, 4),

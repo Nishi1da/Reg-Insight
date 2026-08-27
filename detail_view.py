@@ -214,6 +214,17 @@ def score_bar_inline(score: float, color: str, label: str) -> str:
 #  MAIN DETAIL RENDERER  (replaces _render_detail in app.py)
 # ══════════════════════════════════════════════════════════════════════════════
 
+import re
+
+def _strip_html(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'&nbsp;',  ' ', text)
+    text = re.sub(r'&amp;',   '&', text)
+    text = re.sub(r'\s+',     ' ', text).strip()
+    return text
+
 def render_detail_v2(item: dict, search_query: str = ""):
     """
     Full Week-8 detail panel.
@@ -235,12 +246,12 @@ def render_detail_v2(item: dict, search_query: str = ""):
     matches    = item.get("policy_matches") or []
 
     top_match  = matches[0] if matches else {}
-    pol_text   = (
-        top_match.get("policy_text") or
-        top_match.get("policy_chunk_preview") or
-        item.get("policy_text") or
-        "No matching policy text found."
-    )
+    pol_text = _strip_html(
+    top_match.get("policy_text") or
+    top_match.get("policy_chunk_preview") or
+    item.get("policy_text") or
+    ""
+) or "No matching policy text found."
     pol_source = (
         top_match.get("policy_source") or
         item.get("policy_document") or
@@ -300,7 +311,7 @@ def render_detail_v2(item: dict, search_query: str = ""):
     if len(matches) > 1:
         with st.expander(f"📎 All {len(matches)} Policy Candidates", expanded=False):
             for rank, match in enumerate(matches, 1):
-                m_text   = match.get("policy_text") or match.get("policy_chunk_preview") or ""
+                m_text = _strip_html(match.get("policy_text") or match.get("policy_chunk_preview") or "")
                 m_source = match.get("policy_source") or ""
                 m_score  = float(match.get("score") or match.get("final_score") or 0)
                 m_stem   = Path(m_source).stem if m_source else "—"
@@ -511,7 +522,9 @@ def page_explorer_v2():
                 }
                 badge_style = cls_colors.get(cls, "background:#F1F5F9;color:#64748B")
                 risk_style  = risk_colors.get(risk, "")
-                badge_span  = (
+                score_color = _score_color(score)
+
+                badge_span = (
                     f'<span style="{badge_style};display:inline-block;'
                     f'padding:0.15rem 0.55rem;border-radius:20px;'
                     f'font-size:0.68rem;font-weight:600;text-transform:uppercase">'
@@ -525,21 +538,24 @@ def page_explorer_v2():
                     if risk and risk_style else ""
                 )
                 section_span = (
-                    f'<span style="font-size:0.7rem;color:#94A3B8">{section}</span>'
+                    f'<span style="font-size:0.7rem;color:#94A3B8">'
+                    f'{html_lib.escape(section)}</span>'
                     if section else ""
                 )
-                score_color = _score_color(score)
+
+                # ── FIX: score rendered directly in span style, no nested f-string ──
+                score_span = (
+                    f'<span style="color:{score_color};font-size:0.7rem;'
+                    f'font-family:\'DM Mono\',monospace;margin-left:auto">'
+                    f'{score:.2f}</span>'
+                )
 
                 st.markdown(f"""
                 <div class="result-row" style="{border}">
                     <div class="reg-text">{html_lib.escape(text or '')}…</div>
                     <div class="meta" style="margin-top:0.3rem;display:flex;
                                             flex-wrap:wrap;gap:0.3rem;align-items:center">
-                        {badge_span}{risk_span}{section_span}
-                        <span style="color:#94A3B8;font-size:0.7rem;
-                                    font-family:'DM Mono',monospace;margin-left:auto">
-                            {score_color and f'<span style="color:{score_color}">{score:.2f}</span>'}
-                        </span>
+                        {badge_span}{risk_span}{section_span}{score_span}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)

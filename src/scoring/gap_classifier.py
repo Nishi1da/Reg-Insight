@@ -103,20 +103,20 @@ class GapClassifier:
         default_config = {
         'thresholds': {
             'aligned': {
-                'min_score': 0.12,
+                'min_score': 0.70,
                 'max_score': 1.0,
                 'description': 'Aligned',
                 'action': 'None'
             },
             'partial': {
-                'min_score': 0.05,
-                'max_score': 0.119,
+                'min_score': 0.40,
+                'max_score': 0.699,
                 'description': 'Partial',
                 'action': 'Review'
             },
             'gap': {
                 'min_score': 0.0,
-                'max_score': 0.049,
+                'max_score': 0.399,
                 'description': 'Gap',
                 'action': 'Update'
             }

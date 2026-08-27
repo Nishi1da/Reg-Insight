@@ -73,9 +73,9 @@ class GapAnalyzer:
             'regulations_processed': 0,
             'total_processing_time_ms': 0,
             'avg_time_per_regulation_ms': 0,
-            'domain_filter_hits': 0,       # how many used domain-filtered retrieval
-            'domain_filter_fallbacks': 0,  # how many fell back to unfiltered
-            'cosine_gate_rejections': 0,   # how many blocked by cosine gate
+            'domain_filter_hits': 0,
+            'domain_filter_fallbacks': 0,
+            'cosine_gate_rejections': 0,
         }
 
         logger.info("Gap Analyzer initialized successfully")
@@ -95,7 +95,7 @@ class GapAnalyzer:
             logger.warning(f"Could not load calibration: {e}")
 
     # ------------------------------------------------------------------ #
-    #  DOMAIN-FILTERED RETRIEVAL  (Fix 5)                                 #
+    #  DOMAIN-FILTERED RETRIEVAL                                          #
     # ------------------------------------------------------------------ #
 
     def _get_candidates_with_domain_filter(
@@ -110,9 +110,6 @@ class GapAnalyzer:
           1. Query policy collection filtered to same domain.
           2. If fewer than 2 results, fall back to unfiltered policy query.
           3. Apply cosine gate — drop candidates with bi-encoder score < COSINE_GATE.
-
-        This ensures regulation chunks only match semantically related policy
-        chunks, preventing cross-domain false matches.
         """
         generator = self.candidate_pipeline.generator
 
@@ -139,14 +136,13 @@ class GapAnalyzer:
                         f"Domain filter '{reg_domain}': {len(raw_candidates)} candidates"
                     )
                 else:
-                    # Too few — fall through to unfiltered
                     raw_candidates = []
 
             except Exception as e:
                 logger.debug(f"Domain filter query failed ({e}), falling back")
                 raw_candidates = []
 
-        # ── Step 2: fallback — any policy chunk ───────────────────────────
+        # ── Step 2: fallback — any policy chunk ──────────────────────────
         if not raw_candidates:
             self.stats['domain_filter_fallbacks'] += 1
             try:
@@ -157,14 +153,13 @@ class GapAnalyzer:
                     where_filter={"doc_type": {"$eq": "policy"}}
                 )
             except Exception:
-                # Last resort — no filter at all
                 raw_candidates = generator.get_candidates(
                     regulation_chunk,
                     top_k=5,
                     min_score=0.2
                 )
 
-        # ── Step 3: cosine gate — remove weak semantic matches ────────────
+        # ── Step 3: cosine gate ───────────────────────────────────────────
         before_gate = len(raw_candidates)
         raw_candidates = self._apply_cosine_gate(raw_candidates)
         rejected = before_gate - len(raw_candidates)
@@ -176,13 +171,9 @@ class GapAnalyzer:
         return raw_candidates
 
     def _apply_cosine_gate(self, candidates: list) -> list:
-        """
-        Drop candidates whose bi-encoder similarity is below COSINE_GATE.
-        These are semantically unrelated — cross-encoder scoring is wasted on them.
-        """
+        """Drop candidates whose bi-encoder similarity is below COSINE_GATE."""
         filtered = []
         for c in candidates:
-            # Support both object attributes and dict keys
             if hasattr(c, 'bi_encoder_score'):
                 score = c.bi_encoder_score
             elif hasattr(c, 'similarity_score'):
@@ -224,7 +215,7 @@ class GapAnalyzer:
 
         reg_domain = regulation_chunk.get('metadata', {}).get('domain', 'general')
 
-        # ── Step 1: retrieve candidates (domain-filtered + cosine gate) ───
+        # ── Step 1: retrieve candidates ───────────────────────────────────
         raw_candidates = self._get_candidates_with_domain_filter(
             regulation_chunk, reg_domain
         )
@@ -239,7 +230,7 @@ class GapAnalyzer:
         else:
             scored = []
 
-        # ── Step 4: classify (empty list → UNMATCHED in classifier) ───────
+        # ── Step 4: classify ──────────────────────────────────────────────
         classification = self.classifier.classify(
             regulation_chunk['chunk_id'],
             regulation_chunk['content'],
@@ -275,13 +266,17 @@ class GapAnalyzer:
     def analyze_document(
         self,
         limit: Optional[int] = None,
-        progress_callback=None
+        progress_callback=None,
+        source_filter: Optional[str] = None
     ) -> Dict:
         """
         Analyze all regulation chunks from ChromaDB.
 
         CRITICAL: filters collection to doc_type="regulation" only so policy
         chunks are never analyzed as if they were regulations.
+
+        source_filter: if provided, further filters to chunks from that source
+        filename only — used when analyzing a freshly uploaded PDF.
         """
         logger.info(f"Starting document analysis (limit={limit})...")
         start_time = time.time()
@@ -292,9 +287,17 @@ class GapAnalyzer:
 
         # ── Fetch regulation chunks only ──────────────────────────────────
         try:
+            where_filter = {"doc_type": "regulation"}
+            if source_filter:
+                where_filter = {
+                    "$and": [
+                        {"doc_type": "regulation"},
+                        {"source": source_filter}
+                    ]
+                }
             all_data = collection.get(
                 limit=limit,
-                where={"doc_type": "regulation"}
+                where=where_filter
             )
             logger.info("Filtered to doc_type='regulation' chunks only")
         except Exception:
@@ -356,7 +359,6 @@ class GapAnalyzer:
             }
         )
 
-        # Log domain filter effectiveness
         logger.info(
             f"Domain filter stats — hits: {self.stats['domain_filter_hits']}, "
             f"fallbacks: {self.stats['domain_filter_fallbacks']}, "
