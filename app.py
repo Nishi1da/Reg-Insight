@@ -1,4 +1,4 @@
-"""
+﻿"""
 REG-INSIGHT — Regulatory Compliance Gap Detection System
 Streamlit UI — connects to run_compliance_analysis.py output
 """
@@ -8,12 +8,14 @@ import json
 import time
 import io
 import csv
+import re
 import sys
 from pathlib import Path
 from datetime import datetime
 
 from detail_view import WEEK8_CSS, page_explorer_v2
 from export import page_export_v2
+from src.change_monitor import analyse_changes
 import requests
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -155,6 +157,25 @@ st.markdown(WEEK8_CSS, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# HTML STRIP UTILITY
+# ══════════════════════════════════════════════════════════════════════════════
+
+def strip_html(text: str) -> str:
+    """Remove HTML tags and decode common HTML entities from text."""
+    if not text:
+        return ""
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'&nbsp;',  ' ',  text)
+    text = re.sub(r'&amp;',   '&',  text)
+    text = re.sub(r'&lt;',    '<',  text)
+    text = re.sub(r'&gt;',    '>',  text)
+    text = re.sub(r'&quot;',  '"',  text)
+    text = re.sub(r'&#39;',   "'",  text)
+    text = re.sub(r'\s+',     ' ',  text).strip()
+    return text
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # FORMAT ADAPTER
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -162,7 +183,7 @@ def normalize_item(item: dict) -> dict:
     out = dict(item)
 
     # 1. Regulation text
-    out["regulation_text"] = (
+    out["regulation_text"] = strip_html(
         item.get("regulation_text") or item.get("chunk_text") or ""
     )
 
@@ -207,12 +228,14 @@ def normalize_item(item: dict) -> dict:
     out["cross_encoder_score"] = float(item.get("cross_encoder_score") or 0.0)
 
     # 5. Policy text/source
-    pol_text    = item.get("policy_text", "")
+    pol_text    = strip_html(item.get("policy_text", ""))
     pol_source  = item.get("policy_document") or item.get("matched_policy", "")
     old_matches = item.get("policy_matches", []) or []
     if old_matches and isinstance(old_matches[0], dict):
         top        = old_matches[0]
-        pol_text   = pol_text   or top.get("policy_text") or top.get("policy_chunk_preview", "")
+        pol_text   = pol_text or strip_html(
+            top.get("policy_text") or top.get("policy_chunk_preview", "")
+        )
         pol_source = pol_source or top.get("policy_source", "")
     out["_pol_text"]   = pol_text
     out["_pol_source"] = pol_source
@@ -245,7 +268,7 @@ def normalize_item(item: dict) -> dict:
     out["coverage_type"]        = item.get("coverage_type", "")
     out["obligations"]          = item.get("obligations", [])
 
-    # 8. regulation_metadata (needed by detail_view.py)
+    # 8. regulation_metadata
     out["regulation_metadata"] = item.get("regulation_metadata") or {
         "domain":         item.get("category", ""),
         "page_number":    item.get("page_number", ""),
@@ -329,16 +352,28 @@ def init_state():
         "analysis_done":     False,
         "reg_items":         None,
         "raw_report":        None,
+        "report_data":       None,
+        "gap_results":       None,
+        "chroma_collection": None,
+        "selected_regulation": None,
         "summary":           None,
         "selected_item_idx": None,
         "regulation_file":   None,
         "policy_file":       None,
-        "explorer_page":     0,       # ← needed by page_explorer_v2
+        "explorer_page":     0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
+    # ── Auto-load ChromaDB on startup ────────────────────────────────
+    if st.session_state.chroma_collection is None:
+        try:
+            import chromadb
+            client = chromadb.PersistentClient(path="data/processed/chroma_db")
+            st.session_state.chroma_collection = client.get_collection("regulations")
+        except Exception as e:
+            pass
 init_state()
 
 PRELOAD_PATHS = [
@@ -420,11 +455,12 @@ def render_sidebar():
         st.markdown("<hr>", unsafe_allow_html=True)
 
         pages = {
-            "home":     ("🏠", "Home"),
-            "analyze":  ("⚙️", "Run Analysis"),
-            "results":  ("📊", "Results"),
-            "explorer": ("🔍", "Gap Explorer"),
-            "export":   ("📥", "Export"),
+            "home":           ("🏠", "Home"),
+            "analyze":        ("⚙️", "Run Analysis"),
+            "results":        ("📊", "Results"),
+            "explorer":       ("🔍", "Gap Explorer"),
+            "export":         ("📥", "Export"),
+            "change_monitor": ("🔄", "Change Monitor"),   # ← NEW
         }
         for key, (icon, label) in pages.items():
             if st.button(f"{icon}  {label}", key=f"nav_{key}", use_container_width=True):
@@ -487,8 +523,8 @@ def page_home():
          "reading hundreds of pages manually."),
         ("green", "How It Works",
          "Uses semantic search + cross-encoder scoring + LLM explanations "
-             "to classify each regulation as aligned, partial, gap, or unmatched."),
-             ]
+         "to classify each regulation as aligned, partial, gap, or unmatched."),
+    ]
     for col, (color, label, text) in zip([col1, col2, col3], cards):
         with col:
             st.markdown(
@@ -512,6 +548,7 @@ def page_home():
                 if normalized:
                     st.session_state.reg_items     = normalized
                     st.session_state.raw_report    = raw
+                    st.session_state.report_data   = raw
                     st.session_state.summary       = summary
                     st.session_state.analysis_done = True
                     st.session_state.page          = "results"
@@ -562,14 +599,18 @@ def page_home():
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGE: ANALYZE
 # ══════════════════════════════════════════════════════════════════════════════
-
 def page_analyze():
     st.markdown("""<div class="page-header">
         <h1>Run Analysis</h1>
         <p>Load a pre-computed report or upload new PDFs for live analysis</p>
     </div>""", unsafe_allow_html=True)
 
-    tab1, tab2 = st.tabs(["📂 Load Pre-computed Report", "📤 Upload New PDFs"])
+    IS_DEPLOYED = st.secrets.get("DEPLOYED", "false") == "true"
+
+    if IS_DEPLOYED:
+        tab1, = st.tabs(["📂 Load Pre-computed Report"])
+    else:
+        tab1, tab2 = st.tabs(["📂 Load Pre-computed Report", "📤 Upload New PDFs"])
 
     with tab1:
         st.markdown("#### Available Reports")
@@ -598,6 +639,7 @@ def page_analyze():
                 if normalized:
                     st.session_state.reg_items     = normalized
                     st.session_state.raw_report    = raw
+                    st.session_state.report_data   = raw 
                     st.session_state.summary       = summary
                     st.session_state.analysis_done = True
                     st.session_state.page          = "results"
@@ -617,28 +659,29 @@ def page_analyze():
             language="bash"
         )
 
-    with tab2:
-        st.info("Full pipeline takes 5–40 minutes depending on mode.")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**📜 Regulation PDF**")
-            reg_file = st.file_uploader("Regulation", type=["pdf"], key="reg_up",
-                                         label_visibility="collapsed")
-            if reg_file:
-                st.success(f"✅ {reg_file.name}")
-                st.session_state.regulation_file = reg_file
-        with col2:
-            st.markdown("**🏢 Company Policy PDF**")
-            pol_file = st.file_uploader("Policy", type=["pdf"], key="pol_up",
-                                         label_visibility="collapsed")
-            if pol_file:
-                st.success(f"✅ {pol_file.name}")
-                st.session_state.policy_file = pol_file
+    if not IS_DEPLOYED:
+        with tab2:
+            st.info("Full pipeline takes 5–40 minutes depending on mode.")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**📜 Regulation PDF**")
+                reg_file = st.file_uploader("Regulation", type=["pdf"], key="reg_up",
+                                             label_visibility="collapsed")
+                if reg_file:
+                    st.success(f"✅ {reg_file.name}")
+                    st.session_state.regulation_file = reg_file
+            with col2:
+                st.markdown("**🏢 Company Policy PDF**")
+                pol_file = st.file_uploader("Policy", type=["pdf"], key="pol_up",
+                                             label_visibility="collapsed")
+                if pol_file:
+                    st.success(f"✅ {pol_file.name}")
+                    st.session_state.policy_file = pol_file
 
-        both = (st.session_state.regulation_file is not None and
-                st.session_state.policy_file is not None)
-        if st.button("🔍 Analyze Compliance Gaps", disabled=not both):
-            _run_pipeline_demo()
+            both = (st.session_state.regulation_file is not None and
+                    st.session_state.policy_file is not None)
+            if st.button("🔍 Analyze Compliance Gaps", disabled=not both):
+                _run_pipeline_demo()
 
 
 def _run_pipeline_demo():
@@ -648,7 +691,6 @@ def _run_pipeline_demo():
     reg_file = st.session_state.regulation_file
     pol_file = st.session_state.policy_file
 
-    # ── Step 1: Submit to FastAPI ─────────────────────────────────────
     st.markdown("#### ⚙️ Pipeline Running")
     status_area = st.empty()
 
@@ -682,7 +724,6 @@ def _run_pipeline_demo():
         )
         return
 
-    # ── Step 2: Poll for completion ───────────────────────────────────
     prog     = st.progress(0)
     pct      = 0
 
@@ -695,9 +736,9 @@ def _run_pipeline_demo():
         "Complete":                                      (100, "Complete ✅"),
     }
 
-    max_wait   = 60 * 40   # 40 minutes max
-    poll_interval = 5       # check every 5 seconds
-    elapsed    = 0
+    max_wait      = 60 * 40
+    poll_interval = 5
+    elapsed       = 0
 
     while elapsed < max_wait:
         try:
@@ -707,10 +748,9 @@ def _run_pipeline_demo():
             elapsed += poll_interval
             continue
 
-        step   = job.get("step", "")
+        step       = job.get("step", "")
         job_status = job.get("status", "")
 
-        # Update progress bar
         for key, (target_pct, label) in step_labels.items():
             if key in step or step == key:
                 pct = target_pct
@@ -726,7 +766,6 @@ def _run_pipeline_demo():
             unsafe_allow_html=True
         )
 
-        # ── Done ──────────────────────────────────────────────────────
         if job_status == "done":
             prog.progress(100)
             result_filename = job.get("result")
@@ -739,6 +778,7 @@ def _run_pipeline_demo():
             if normalized:
                 st.session_state.reg_items     = normalized
                 st.session_state.raw_report    = raw
+                st.session_state.report_data   = raw 
                 st.session_state.summary       = summary
                 st.session_state.analysis_done = True
                 st.session_state.page          = "results"
@@ -747,7 +787,6 @@ def _run_pipeline_demo():
                 st.error(f"Could not parse output file: {result_path}")
             return
 
-        # ── Error ─────────────────────────────────────────────────────
         if job_status == "error":
             st.error(f"Pipeline failed: {job.get('error', 'Unknown error')}")
             return
@@ -879,15 +918,201 @@ def page_results():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# PAGE: REGULATORY CHANGE MONITOR
+# ══════════════════════════════════════════════════════════════════════════════
+
+def page_change_monitor():
+    st.markdown("""<div class="page-header">
+        <h1>🔄 Regulatory Change Monitor</h1>
+        <p>Upload an amended regulation PDF to detect new, modified, and removed obligations</p>
+    </div>""", unsafe_allow_html=True)
+
+    # ── Guard: ChromaDB must be initialised ──────────────────────────────────
+    if st.session_state.chroma_collection is None:
+        st.warning(
+            "⚠️ ChromaDB collection is not initialised. "
+            "Please load or run an analysis first so the regulation index is available.",
+            icon="⚠️"
+        )
+        if st.button("⚙️ Go to Run Analysis"):
+            st.session_state.page = "analyze"
+            st.rerun()
+        return
+
+    # ── Regulation selector ──────────────────────────────────────────────────
+    REGULATION_OPTIONS = [
+        "AML/PMLA",
+        "CERT-In Directions 2022",
+        "DPDP Act 2023",
+        "NBFC IT Framework",
+        "RBI Digital Payment Security Controls",
+    ]
+
+    col_sel, col_info = st.columns([2, 3])
+    with col_sel:
+        regulation = st.selectbox(
+            "Select Regulation",
+            options=REGULATION_OPTIONS,
+            help="Choose the regulation whose updated version you are uploading.",
+        )
+    with col_info:
+        st.markdown(
+            '<div style="background:#E6F4F4;border-left:3px solid #0E7C7B;'
+            'padding:0.75rem 1rem;border-radius:0 6px 6px 0;font-size:0.83rem;'
+            'color:#1A2B3C;margin-top:1.6rem">'
+            '📌 The uploaded PDF will be compared chunk-by-chunk against the '
+            'version currently stored in ChromaDB.</div>',
+            unsafe_allow_html=True
+        )
+
+    # ── File uploader ────────────────────────────────────────────────────────
+    st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+    uploaded_file = st.file_uploader(
+        "Upload Updated Regulation PDF",
+        type="pdf",
+        help="Upload the amended/revised version of the selected regulation.",
+    )
+
+    st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+
+    if not uploaded_file:
+        st.info("📄 Upload an updated regulation PDF above to begin analysis.")
+        return
+
+    if not st.button("🔍 Analyse Changes", type="primary"):
+        return
+
+    # ── Run analysis ─────────────────────────────────────────────────────────
+    with st.spinner("Comparing chunks against stored version…"):
+        results = analyse_changes(
+            new_pdf_bytes=uploaded_file.read(),
+            regulation_name=regulation,
+            chroma_collection=st.session_state.chroma_collection,
+        )
+
+    # ── Handle errors ─────────────────────────────────────────────────────────
+    if results.get("error"):
+        st.error(f"❌ Analysis failed: {results['error']}")
+        return
+
+    # ── Summary metrics ───────────────────────────────────────────────────────
+    st.markdown("#### 📊 Change Summary")
+    c1, c2, c3, c4 = st.columns(4)
+    for col, color, val, label, sub in [
+        (c1, "red",   len(results["new"]),       "New",       "obligations added"),
+        (c2, "amber", len(results["modified"]),  "Modified",  "wording changed"),
+        (c3, "teal",  len(results["removed"]),   "Removed",   "obligations dropped"),
+        (c4, "green", results["unchanged_count"],"Unchanged", "identical to stored"),
+    ]:
+        with col:
+            st.markdown(
+                f'<div class="metric-card {color}"><div class="label">{label}</div>'
+                f'<div class="value">{val}</div><div class="sub">{sub}</div></div>',
+                unsafe_allow_html=True
+            )
+
+    st.caption(
+        f"New PDF: **{results['total_new_chunks']} chunks** | "
+        f"Stored version: **{results['total_old_chunks']} chunks**"
+    )
+
+    # Nothing changed
+    if (
+        not results["new"]
+        and not results["modified"]
+        and not results["removed"]
+    ):
+        st.success(
+            "✅ No significant changes detected. "
+            "The uploaded PDF appears identical to the stored version."
+        )
+        return
+
+    st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+
+    # ── New obligations ───────────────────────────────────────────────────────
+    if results["new"]:
+        st.markdown(f"#### 🆕 New Obligations &nbsp;<span style='font-size:0.85rem;color:#64748B'>({len(results['new'])})</span>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="text-block gap-block" style="margin-bottom:1rem">'
+            'These obligations <strong>did not exist</strong> in the previously stored version. '
+            'Review whether your policies need updating.</div>',
+            unsafe_allow_html=True
+        )
+        for i, chunk in enumerate(results["new"], start=1):
+            with st.expander(f"New obligation #{i}", expanded=(i <= 3)):
+                st.markdown(
+                    f'<div class="text-block gap-block">{chunk}</div>',
+                    unsafe_allow_html=True
+                )
+
+    # ── Modified obligations ──────────────────────────────────────────────────
+    if results["modified"]:
+        st.markdown(f"#### ⚠️ Modified Obligations &nbsp;<span style='font-size:0.85rem;color:#64748B'>({len(results['modified'])})</span>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="text-block" style="border-color:var(--amber);margin-bottom:1rem">'
+            'These obligations exist in <strong>both versions</strong> but the wording has changed. '
+            'Sorted by degree of change — most changed first.</div>',
+            unsafe_allow_html=True
+        )
+        sorted_modified = sorted(results["modified"], key=lambda x: x["similarity"])
+        for i, item in enumerate(sorted_modified, start=1):
+            change_label = "minor wording change" if item["similarity"] > 0.80 else "significant change"
+            with st.expander(
+                f"Modified #{i} — similarity: {item['similarity']:.2f} ({change_label})",
+                expanded=(i <= 2)
+            ):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**📌 Stored Version**")
+                    st.markdown(
+                        f'<div class="text-block policy">{item["old"]}</div>',
+                        unsafe_allow_html=True
+                    )
+                with col2:
+                    st.markdown("**📝 New Version**")
+                    st.markdown(
+                        f'<div class="text-block regulation">{item["new"]}</div>',
+                        unsafe_allow_html=True
+                    )
+                st.markdown(
+                    score_bar(item["similarity"], color="#D4820A", label="Similarity Score"),
+                    unsafe_allow_html=True
+                )
+
+    # ── Removed obligations ───────────────────────────────────────────────────
+    if results["removed"]:
+        st.markdown(f"#### ❌ Removed Obligations &nbsp;<span style='font-size:0.85rem;color:#64748B'>({len(results['removed'])})</span>", unsafe_allow_html=True)
+        st.markdown(
+            '<div class="text-block" style="border-color:var(--slate);margin-bottom:1rem">'
+            'These obligations were in the stored version but have <strong>no counterpart</strong> '
+            'in the uploaded PDF — they may have been repealed or restructured.</div>',
+            unsafe_allow_html=True
+        )
+        for i, chunk in enumerate(results["removed"], start=1):
+            with st.expander(f"Removed obligation #{i}", expanded=(i <= 3)):
+                st.markdown(
+                    f'<div class="text-block" style="border-color:var(--slate)">{chunk}</div>',
+                    unsafe_allow_html=True
+                )
+
+    st.markdown("<hr class='section-divider'>", unsafe_allow_html=True)
+    st.caption(
+        "ℹ️ Thresholds — Unchanged: ≥ 0.90 | Modified: 0.60–0.89 | New: < 0.60"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # ROUTER
 # ══════════════════════════════════════════════════════════════════════════════
 
 render_sidebar()
 
 page = st.session_state.page
-if   page == "home":     page_home()
-elif page == "analyze":  page_analyze()
-elif page == "results":  page_results()
-elif page == "explorer": page_explorer_v2()    # ← Week 8 upgrade
-elif page == "export":   page_export_v2()      # ← Week 9 upgrade
-else:                    page_home()
+if   page == "home":           page_home()
+elif page == "analyze":        page_analyze()
+elif page == "results":        page_results()
+elif page == "explorer":       page_explorer_v2()
+elif page == "export":         page_export_v2()
+elif page == "change_monitor": page_change_monitor()   # ← NEW
+else:                          page_home()
