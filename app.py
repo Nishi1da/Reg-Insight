@@ -373,7 +373,7 @@ def init_state():
             client = chromadb.PersistentClient(path="data/processed/chroma_db")
             st.session_state.chroma_collection = client.get_collection("regulations")
         except Exception as e:
-             st.session_state.chroma_error = str(e)
+            pass
 init_state()
 
 PRELOAD_PATHS = [
@@ -934,8 +934,6 @@ def page_change_monitor():
             "Please load or run an analysis first so the regulation index is available.",
             icon="⚠️"
         )
-        if "chroma_error" in st.session_state:
-            st.code(st.session_state.chroma_error)
         if st.button("⚙️ Go to Run Analysis"):
             st.session_state.page = "analyze"
             st.rerun()
